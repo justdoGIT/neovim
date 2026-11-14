@@ -65,10 +65,16 @@ describe('completion', function()
     it('returns expected dict in normal completion', function()
       feed('ifoo<ESC>o<C-x><C-n>')
       eq('foo', eval('getline(2)'))
-      eq(
-        { word = 'foo', abbr = '', menu = '', info = '', kind = '', user_data = '' },
-        eval('v:completed_item')
-      )
+      eq({
+        word = 'foo',
+        abbr = '',
+        menu = '',
+        info = '',
+        kind = '',
+        user_data = '',
+        abbr_hlgroup = '',
+        kind_hlgroup = '',
+      }, eval('v:completed_item'))
     end)
     it('is readonly', function()
       screen:try_resize(80, 8)
@@ -105,6 +111,8 @@ describe('completion', function()
         menu = 'baz',
         info = 'foobar',
         kind = 'foobaz',
+        abbr_hlgroup = '',
+        kind_hlgroup = '',
         user_data = '',
       }, eval('v:completed_item'))
     end)
@@ -1060,6 +1068,21 @@ describe('completion', function()
     eq('edit', fn.getcompletion('restart ed', 'cmdline')[1])
   end)
 
+  it('cmdline completion for :*cd family shows dirs only', function()
+    local dir = 'Xtest-cd-compl/'
+    local subdir1 = dir .. 'subdir1/'
+    local subdir2 = dir .. 'subdir2/'
+    finally(function()
+      n.rmdir(dir)
+    end)
+    fn.mkdir(subdir1, 'p')
+    fn.mkdir(subdir2, 'p')
+    fn.writefile({ '' }, dir .. 'file')
+    for _, cmd in ipairs({ 'cd', 'lcd', 'tcd', 'bcd' }) do
+      eq({ subdir1, subdir2 }, fn.getcompletion(cmd .. ' ' .. dir, 'cmdline'))
+    end
+  end)
+
   describe('from the commandline window', function()
     it('is cleared after CTRL-C', function()
       feed('q:')
@@ -1296,6 +1319,31 @@ describe('completion', function()
       {1:~                               }|*9
                                       |
     ]])
+  end)
+
+  -- oldtest: Test_complete_included_file_name()
+  it('shows included files by relative path', function()
+    t.mkdir('Xincl')
+    finally(function()
+      n.rmdir('Xincl')
+    end)
+    t.mkdir('Xincl/sub')
+    t.write_file('Xincl/sub/inc.vim', 'let included_word = 1\n')
+    t.write_file('Xincl/main.vim', 'source ./sub/inc.vim\n\n')
+    n.exec([[
+      edit Xincl/main.vim
+      setlocal include=^\\s*source\\s\\+ complete=i completeopt=menuone,noselect
+    ]])
+    feed('Goincluded_<C-N>')
+    screen:expect([[
+      source ./sub/inc.vim                                        |
+                                                                  |
+      included_^                                                   |
+      {4:included_word Xincl/sub/inc.vim }{1:                            }|
+      {1:~                                                           }|*3
+      {5:-- Keyword completion (^N^P) }{19:Back at original}               |
+    ]])
+    feed('<Esc>')
   end)
 
   -- oldtest: Test_complete_changed_complete_info()
@@ -1901,27 +1949,33 @@ describe('completion', function()
     eq('foobar(', n.api.nvim_get_current_line())
   end)
 
-  it('complete_info() reports equal, preselect and commit_chars', function()
-    command('set completeopt=menuone,noinsert')
+  it('complete_info() reports completion item fields', function()
+    command('set hidden complete=FTestComplete,b completeopt=menuone,noinsert')
+    command('file Xcompletion-source')
+    api.nvim_buf_set_lines(0, 0, -1, false, { 'foobar' })
+    command('enew')
     source([[
-      function! TestComplete() abort
-        call complete(1, [
+      function! TestComplete(findstart, base) abort
+        if a:findstart
+          return 0
+        endif
+        return [
               \ {'word': 'foo', 'equal': 1},
               \ {'word': 'bar', 'preselect': v:true},
               \ {'word': 'baz', 'commit_chars': '('},
               \ {'word': 'qux'},
-              \ ])
-        return ''
+              \ ]
       endfunction
     ]])
-    feed('i<C-r>=TestComplete()<CR>')
+    feed('i<C-n>')
     poke_eventloop()
 
     local items = fn.complete_info({ 'items' }).items
-    eq(4, #items)
+    eq(5, #items)
     eq({ 1, nil }, { items[1].equal, items[1].preselect })
     eq(1, items[2].preselect)
     eq('(', items[3].commit_chars)
     eq({ nil, nil, nil }, { items[4].equal, items[4].preselect, items[4].commit_chars })
+    eq('Xcompletion-source', items[5].menu)
   end)
 end)

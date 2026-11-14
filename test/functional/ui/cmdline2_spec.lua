@@ -180,7 +180,7 @@ describe('cmdline2', function()
       {1:~                                                    }|*12
       {16::}{15:find} ^                                               |
     ]])
-    t.eq(n.eval('v:errmsg'), "E1514: 'findfunc' did not return a List type")
+    t.eq("E1514: 'findfunc' did not return a List type", n.eval('v:errmsg'))
   end)
 
   it('substitution match, empty message does not clear active cmdline', function()
@@ -230,15 +230,6 @@ describe('cmdline2', function()
     feed(':call Fo<C-Z>')
     screen:expect([[
                                                            |
-      {1:~                                                    }|*9
-      {3:                                                     }|
-      Foo()   Fooo()                                       |
-                                                           |
-      {16::}{15:call} Fo^                                             |
-    ]])
-    feed('<C-Z>')
-    screen:expect([[
-                                                           |
       {1:~                                                    }|*8
       {3:                                                     }|
       Foo()   Fooo()                                       |
@@ -256,7 +247,7 @@ describe('cmdline2', function()
                                                            |
       {16::}{15:call} Foo^                                            |
     ]])
-    feed('<C-Z><C-Z>')
+    feed('<C-Z>')
     screen:expect([[
                                                            |
       {1:~                                                    }|*9

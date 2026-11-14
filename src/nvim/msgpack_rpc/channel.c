@@ -139,10 +139,11 @@ bool rpc_send_event(uint64_t id, const char *name, Array args)
 /// @param id The channel id
 /// @param method_name The method name, an arbitrary string
 /// @param args Array with method arguments
+/// @param timeout Max milliseconds to wait for the response, or -1 to wait forever.
 /// @param[out] error True if the return value is an error
 /// @return Whatever the remote method returned
-Object rpc_send_call(uint64_t id, const char *method_name, Array args, ArenaMem *result_mem,
-                     Error *err)
+Object rpc_send_call(uint64_t id, const char *method_name, Array args, int timeout,
+                     ArenaMem *result_mem, Error *err)
 {
   Channel *channel = NULL;
 
@@ -162,13 +163,17 @@ Object rpc_send_call(uint64_t id, const char *method_name, Array args, ArenaMem 
   // Push the frame
   ChannelCallFrame frame = { request_id, false, false, NIL, NULL };
   kv_push(rpc->call_stack, &frame);
-  LOOP_PROCESS_EVENTS_UNTIL(&main_loop, channel->events, -1, frame.returned || rpc->closed);
+  LOOP_PROCESS_EVENTS_UNTIL(&main_loop, channel->events, timeout, frame.returned || rpc->closed);
   (void)kv_pop(rpc->call_stack);
 
-  // !frame.returned implies rpc->closed.
   // If frame.returned is true, its memory needs to be freed, so don't return here.
   if (!frame.returned) {
-    api_set_error(err, kErrorTypeException, "Invalid channel: %" PRIu64, id);
+    if (rpc->closed) {
+      api_set_error(err, kErrorTypeException, "Invalid channel: %" PRIu64, id);
+    } else {
+      api_set_error(err, kErrorTypeException, "Request timed out after %d ms: %s", timeout,
+                    method_name);
+    }
     channel_decref(channel);
     return NIL;
   }
@@ -261,10 +266,15 @@ static void parse_msgpack(Channel *channel)
       }
       arena_mem_free(arena_finish(&p->arena));
     } else if (p->type == kMessageTypeResponse) {
-      ChannelCallFrame *frame = channel->rpc.client_type == kClientTypeMsgpackRpc
-                                ? find_call_frame(&channel->rpc, p->request_id)
-                                : kv_last(channel->rpc.call_stack);
-      if (frame == NULL || p->request_id != frame->request_id) {
+      ChannelCallFrame *frame = find_call_frame(&channel->rpc, p->request_id);
+      if (frame == NULL && p->request_id < channel->rpc.next_request_id) {
+        // Late response to a timed-out request! Drop it.
+        DLOG("ch %" PRIu64 ": discarding response id=%" PRIu32, channel->id, p->request_id);
+        arena_mem_free(arena_finish(&p->arena));
+        continue;
+      }
+      if (frame == NULL || (channel->rpc.client_type != kClientTypeMsgpackRpc
+                            && frame != kv_last(channel->rpc.call_stack))) {
         char buf[256];
         snprintf(buf, sizeof(buf),
                  "ch %" PRIu64 " (type=%" PRIu32 ") returned a response with an unknown request "
@@ -313,6 +323,14 @@ static void handle_request(Channel *channel, Unpacker *p, Array args)
   FUNC_ATTR_NONNULL_ALL
 {
   assert(p->type == kMessageTypeRequest || p->type == kMessageTypeNotification);
+
+  // SECURITY: reject API calls from an untrusted peer. Else a malicious (remote) server could run
+  // arbitrary code in the local process.
+  if (!channel->trust && p->handler.fn && p->handler.fn != handle_nvim_error_event) {
+    api_set_error(&p->unpack_error, kErrorTypeException,
+                  "Rejected API call from untrusted peer: %s", p->handler.name);
+    p->handler.fn = NULL;
+  }
 
   if (!p->handler.fn) {
     send_error(channel, p->handler, p->type, p->request_id, p->unpack_error.msg);
@@ -435,6 +453,9 @@ static void internal_read_event(void **argv)
 
   p->read_ptr = buffer->data;
   p->read_size = buffer->size;
+  if (unpacker_closed(p)) {
+    goto end;
+  }
   parse_msgpack(channel);
 
   if (p->read_size) {
@@ -444,6 +465,7 @@ static void internal_read_event(void **argv)
     }
   }
 
+end:
   channel_decref(channel);
   wstream_release_wbuffer(buffer);
 }
@@ -477,6 +499,18 @@ static void broadcast_event(const char *name, Array args)
   kvi_destroy(chans);
 }
 
+/// Checks if an open RPC channel has detach=false.
+static bool has_undetached_rpc_chan(void)
+{
+  Channel *chan;
+  map_foreach_value(&channels, chan, {
+    if (chan->is_rpc && !chan->rpc.closed && !chan->detach) {
+      return true;
+    }
+  });
+  return false;
+}
+
 /// Mark rpc state as closed, and release its reference to the channel.
 /// Don't call this directly, call channel_close(id, kChannelPartRpc, &error)
 void rpc_close(Channel *channel)
@@ -499,10 +533,9 @@ static void rpc_close_event(void **argv)
   channel_decref(channel);
 
 #ifdef MSWIN
-  // For ":detach!": unexpected disconnect does not call ui_detach_channel, unlike the normal
-  // ":detach" case, so we need to do some cleanup here.
-  bool detached_ui_stdio = channel->streamtype == kChannelStreamStdio
-                           && channel->detach && channel->rpc.ui != NULL;
+  // Unexpected disconnect (e.g. after ":detach!") does not call ui_detach_channel, unlike the
+  // normal ":detach" case, so we need to do some cleanup here.
+  bool ui_closed = channel->rpc.ui != NULL;
 #endif
 
   // No more I/O can happen on this channel. Remove UI if there is one attached.
@@ -525,13 +558,14 @@ static void rpc_close_event(void **argv)
       return;
     }
     exit_on_closed_chan(0);
-  } else if (channel->streamtype == kChannelStreamStdio && !channel->detach) {
+  } else if (!channel->detach && !has_undetached_rpc_chan()) {
     exit_on_closed_chan(0);
   }
 #ifdef MSWIN
-  else if (detached_ui_stdio) {
-    // Move this server off the now-dead console so it keeps working (CONIN$/CONOUT$).
-    os_swap_to_hidden_console();
+  else if (ui_closed) {
+    // If the console belongs to the UI's host-terminal, swap to a hidden console, else closing that
+    // terminal would kill this server.
+    os_detach_ui_console(channel->streamtype == kChannelStreamStdio);
   }
 #endif
 }

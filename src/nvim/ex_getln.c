@@ -98,17 +98,6 @@
 /// Last value of prompt_id, incremented when doing new prompt
 static unsigned last_prompt_id = 0;
 
-// Struct to store the viewstate during 'incsearch' highlighting and 'inccommand' preview.
-typedef struct {
-  colnr_T vs_curswant;
-  colnr_T vs_leftcol;
-  colnr_T vs_skipcol;
-  linenr_T vs_topline;
-  int vs_topfill;
-  linenr_T vs_botline;
-  int vs_empty_rows;
-} viewstate_T;
-
 // Struct to store the state of 'incsearch' highlighting.
 typedef struct {
   pos_T search_start;   // where 'incsearch' starts searching
@@ -218,30 +207,6 @@ static void trigger_cmd_autocmd(int typechar, event_T evt)
 {
   char typestr[2] = { (char)typechar, NUL };
   apply_autocmds(evt, typestr, typestr, false, curbuf);
-}
-
-static void save_viewstate(win_T *wp, viewstate_T *vs)
-  FUNC_ATTR_NONNULL_ALL
-{
-  vs->vs_curswant = wp->w_curswant;
-  vs->vs_leftcol = wp->w_leftcol;
-  vs->vs_skipcol = wp->w_skipcol;
-  vs->vs_topline = wp->w_topline;
-  vs->vs_topfill = wp->w_topfill;
-  vs->vs_botline = wp->w_botline;
-  vs->vs_empty_rows = wp->w_empty_rows;
-}
-
-static void restore_viewstate(win_T *wp, viewstate_T *vs)
-  FUNC_ATTR_NONNULL_ALL
-{
-  wp->w_curswant = vs->vs_curswant;
-  wp->w_leftcol = vs->vs_leftcol;
-  wp->w_skipcol = vs->vs_skipcol;
-  wp->w_topline = vs->vs_topline;
-  wp->w_topfill = vs->vs_topfill;
-  wp->w_botline = vs->vs_botline;
-  wp->w_empty_rows = vs->vs_empty_rows;
 }
 
 static void init_incsearch_state(incsearch_state_T *s)
@@ -573,6 +538,7 @@ static void may_do_incsearch_highlighting(int firstc, int count, incsearch_state
   } else if (found != 0) {
     curwin->w_cursor = end_pos;
     curwin->w_valid_cursor = end_pos;  // mark as valid for cmdline_show redraw
+    set_topline_valid(curwin);
   }
 
   msg_starthere();
@@ -1184,7 +1150,7 @@ static int command_line_wildchar_complete(CommandLineState *s)
     if (wim_longest) {
       res = nextwild(&s->xpc, WILD_LONGEST, options, escape);
     } else {
-      if (wim_noselect || wim_list) {
+      if (wim_noselect || (wim_list && !wim_full)) {
         options |= WILD_NOSELECT;
       }
       if (wim_noinsert) {
@@ -1211,8 +1177,9 @@ static int command_line_wildchar_complete(CommandLineState *s)
     if (res == OK && s->xpc.xp_numfiles > ((wim_noselect || wim_noinsert) ? 0 : 1)) {
       if (wim_longest) {
         bool found_longest_prefix = (ccline.cmdpos != cmdpos_before);
-        if (wim_list || (p_wmnu && wim_full)) {
-          showmatches(&s->xpc, p_wmnu, wim_list, kOptWimFlagNoselect);
+        bool show_menu = p_wmnu && wim_full;
+        if (wim_list || show_menu) {
+          showmatches(&s->xpc, show_menu, wim_list, kOptWimFlagNoselect);
         } else if (!found_longest_prefix) {
           bool wim_list_next = (wim_flags[1] & kOptWimFlagList);
           bool wim_full_next = (wim_flags[1] & kOptWimFlagFull);
@@ -1223,7 +1190,8 @@ static int command_line_wildchar_complete(CommandLineState *s)
             if (wim_full_next && !wim_noselect_next && !wim_noinsert_next) {
               nextwild(&s->xpc, WILD_NEXT, options, escape);
             } else {
-              showmatches(&s->xpc, p_wmnu, wim_list_next, p_wmnu ? wim_flags[1] : 0);
+              showmatches(&s->xpc, p_wmnu && (wim_noselect_next || wim_noinsert_next),
+                          wim_list_next, p_wmnu ? wim_flags[1] : 0);
             }
             if (wim_list_next) {
               s->did_wild_list = true;
@@ -1231,8 +1199,9 @@ static int command_line_wildchar_complete(CommandLineState *s)
           }
         }
       } else {
-        if (wim_list || (p_wmnu && (wim_full || wim_noselect || wim_noinsert))) {
-          showmatches(&s->xpc, p_wmnu, wim_list, p_wmnu ? wim_flags[0] : 0);
+        bool show_menu = p_wmnu && (wim_full || wim_noselect || wim_noinsert);
+        if (wim_list || show_menu) {
+          showmatches(&s->xpc, show_menu, wim_list, p_wmnu ? wim_flags[0] : 0);
         } else {
           vim_beep(kOptBoFlagWildmode);
         }
@@ -1522,8 +1491,8 @@ static int command_line_execute(VimState *state, int key)
       if (s->xpc.xp_numfiles > 1
           && ((!s->did_wild_list && (wim_flags[s->wim_index] & kOptWimFlagList)) || p_wmnu)) {
         // Trigger the popup menu when wildoptions=pum
-        showmatches(&s->xpc, p_wmnu, wim_flags[s->wim_index] & kOptWimFlagList,
-                    p_wmnu ? wim_flags[0] : 0);
+        bool list = wim_flags[s->wim_index] & kOptWimFlagList;
+        showmatches(&s->xpc, p_wmnu && !list, list, p_wmnu ? wim_flags[0] : 0);
       }
       nextwild(&s->xpc, WILD_PREV, 0, s->firstc != '@');
       nextwild(&s->xpc, WILD_PREV, 0, s->firstc != '@');
@@ -2676,7 +2645,7 @@ static bool cmdpreview_may_show(CommandLineState *s)
   char *cmdline = xstrdup(ccline.cmdbuff);
   const char *errormsg = NULL;
   emsg_off++;  // Block errors when parsing the command line, and don't update v:errmsg
-  if (!parse_cmdline(&cmdline, &ea, &cmod, &errormsg)) {
+  if (!parse_cmdline(&cmdline, &ea, &cmod, &errormsg, false)) {
     emsg_off--;
     goto end;
   }
@@ -2954,18 +2923,14 @@ char *getcmdline_prompt(const int firstc, const char *const prompt, const int hl
   return ret;
 }
 
-/// Read the 'wildmode' option, fill wim_flags[].
-int check_opt_wim(void)
+/// Parse 'wildmode', updating flags only when non-NULL and the value is valid.
+int check_opt_wim(const char *value, uint8_t *flags)
 {
-  uint8_t new_wim_flags[4];
+  uint8_t new_wim_flags[4] = { 0 };
   int i;
   int idx = 0;
 
-  for (i = 0; i < 4; i++) {
-    new_wim_flags[i] = 0;
-  }
-
-  for (char *p = p_wim; *p; p++) {
+  for (const char *p = value; *p; p++) {
     // Note: Keep this in sync with opt_wim_values.
     for (i = 0; ASCII_ISALPHA(p[i]); i++) {}
     if (p[i] != NUL && p[i] != ',' && p[i] != ':') {
@@ -3004,9 +2969,9 @@ int check_opt_wim(void)
     idx++;
   }
 
-  // only when there are no errors, wim_flags[] is changed
-  for (i = 0; i < 4; i++) {
-    wim_flags[i] = new_wim_flags[i];
+  // Only when there are no errors, the flags are changed.
+  if (flags != NULL) {
+    memcpy(flags, new_wim_flags, sizeof(new_wim_flags));
   }
   return OK;
 }
@@ -4453,19 +4418,23 @@ void cmdline_init(void)
   CLEAR_FIELD(ccline);
 }
 
-/// Check value of 'cedit' and set cedit_key.
-/// Returns NULL if value is OK, error message otherwise.
-const char *did_set_cedit(optset_T *args)
+/// Validate the 'cedit' option.
+const char *validate_cedit(optset_T *args)
 {
-  if (*p_cedit == NUL) {
-    cedit_key = -1;
-  } else {
-    int n = string_to_key(p_cedit);
+  char *value = args->os_newval.data.string.data;
+  if (*value != NUL) {
+    int n = string_to_key(value);
     if (n == 0 || vim_isprintc(n)) {
       return e_invarg;
     }
-    cedit_key = n;
   }
+  return NULL;
+}
+
+/// The 'cedit' option is changed.
+const char *did_set_cedit(optset_T *args FUNC_ATTR_UNUSED)
+{
+  cedit_key = *p_cedit == NUL ? -1 : string_to_key(p_cedit);
   return NULL;
 }
 
@@ -4708,7 +4677,7 @@ void get_user_input(const typval_T *const argvars, typval_T *const rettv, const 
   }
   cmdline_row = msg_row;
 
-  stuffReadbuffSpec(defstr);
+  stuffReadbuffSpecial(defstr);
 
   const int save_ex_normal_busy = ex_normal_busy;
   ex_normal_busy = 0;

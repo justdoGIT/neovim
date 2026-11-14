@@ -73,6 +73,13 @@ func Test_syn_iskeyword()
   redir END
   call assert_equal("\nsyntax iskeyword @,48-57,_,192-255", @c)
 
+  call assert_fails("syntax iskeyword invalid_value", "E474:")
+  redir @c
+  syn iskeyword
+  redir END
+  " did not change
+  call assert_equal("\nsyntax iskeyword @,48-57,_,192-255", @c)
+
   setlocal isk-=_
   call assert_equal('DLTD_BY', GetSyntaxItem('DLTD'))
   /\<D\k\+\>/:norm! ygn
@@ -103,10 +110,15 @@ func Test_syntax_after_reload()
   call delete('Xsomefile')
 endfunc
 
+func Test_syntax_filetype_syntax()
+  set filetype=syntax
+  syntax on
+  syntax off
+  set filetype= syntax=
+endfunc
+
 func Test_syntime()
-  if !has('profile')
-    return
-  endif
+  CheckFeature profile
 
   syntax on
   syntime on
@@ -504,6 +516,18 @@ func Test_ownsyntax()
   syntax off
   set filetype&
   %bw!
+endfunc
+
+func Test_ownsyntax_edit_hidden()
+  " this used to leak memory, needs ASAN or valgrind to confirm
+  call writefile(['one'], 'Xownsyntax1', 'D')
+  call writefile(['two'], 'Xownsyntax2', 'D')
+  set hidden
+  edit Xownsyntax1
+  ownsyntax c
+  edit Xownsyntax2
+  set hidden&
+  %bwipe!
 endfunc
 
 func Test_ownsyntax_completion()

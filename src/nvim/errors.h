@@ -14,12 +14,12 @@ EXTERN const char e_afterinit[] INIT(= N_("E905: Cannot set this option after st
 EXTERN const char e_api_spawn_failed[] INIT(= N_("E903: Could not spawn API job"));
 EXTERN const char e_argreq[] INIT(= N_("E471: Argument required"));
 EXTERN const char e_backslash[] INIT(= N_("E10: \\ should be followed by /, ? or &"));
-EXTERN const char e_cmdwin[] INIT(= N_("E11: Invalid in command-line window; <CR> executes, CTRL-C quits"));
 EXTERN const char e_curdir[] INIT(= N_("E12: Command not allowed in secure mode in current dir or tag search"));
 EXTERN const char e_invalid_buffer_name_str[] INIT(= N_("E158: Invalid buffer name: %s"));
 EXTERN const char e_command_too_recursive[] INIT(= N_("E169: Command too recursive"));
 EXTERN const char e_buffer_nr_invalid_buffer_number[] INIT(= N_("E680: <buffer=%d>: invalid buffer number"));
 EXTERN const char e_buffer_is_not_loaded[] INIT(= N_("E681: Buffer is not loaded"));
+EXTERN const char e_buffer_changed_unexpectedly[] INIT(= N_("E787: Buffer changed unexpectedly"));
 EXTERN const char e_endif[] INIT(= N_("E171: Missing :endif"));
 EXTERN const char e_endtry[] INIT(= N_("E600: Missing :endtry"));
 EXTERN const char e_endwhile[] INIT(= N_("E170: Missing :endwhile"));
@@ -83,6 +83,7 @@ EXTERN const char e_openerrf[] INIT(= N_("E40: Can't open errorfile %s"));
 EXTERN const char e_outofmem[] INIT(= N_("E41: Out of memory!"));
 EXTERN const char e_patnotf2[] INIT(= N_("E486: Pattern not found: %s"));
 EXTERN const char e_positive[] INIT(= N_("E487: Argument must be positive"));
+// E458 unused
 EXTERN const char e_prev_dir[] INIT(= N_("E459: Cannot go back to previous directory"));
 
 EXTERN const char e_no_errors[] INIT(= N_("E42: No Errors"));
@@ -129,6 +130,8 @@ EXTERN const char e_write[] INIT(= N_("E80: Error while writing"));
 EXTERN const char e_zerocount[] INIT(= N_("E939: Positive count required"));
 EXTERN const char e_usingsid[] INIT(= N_("E81: Using <SID> not in a script context"));
 EXTERN const char e_missingparen[] INIT(= N_("E107: Missing parentheses: %s"));
+EXTERN const char e_missing_closing_paren[] INIT(= N_("E110: Missing ')'"));
+EXTERN const char e_missing_closing_paren_str[] INIT(= N_("E110: Missing ')': %s"));
 EXTERN const char e_empty_buffer[] INIT(= N_("E749: Empty buffer"));
 EXTERN const char e_nobufnr[] INIT(= N_("E86: Buffer %" PRId64 " does not exist"));
 

@@ -540,6 +540,22 @@ func Test_python3_list_del_items()
   let l = [0, 1, 2, 3]
 endfunc
 
+" Iterating over a vim.List while Vim script removes the current item
+func Test_python3_list_iter_remove()
+  throw 'Skipped: Nvim does not support vim.bindeval()'
+  let g:iter_l = ['a', 'b', 'c', 'd']
+  py3 << trim EOF
+    seen = []
+    for x in vim.bindeval('g:iter_l'):
+        seen.append(x)
+        vim.command('call remove(g:iter_l, 0)')
+  EOF
+  call assert_equal(['a', 'b', 'c', 'd'], py3eval('seen'))
+  call assert_equal([], g:iter_l)
+  py3 del seen
+  unlet g:iter_l
+endfunc
+
 func Test_python3_dict_del_items()
   throw 'Skipped: Nvim does not support vim.bindeval()'
   let d = eval("{'0' : -1, '1' : 'asd', 'b' : [1, 2, function('strlen')], 'f' : function('min'), '-1' : {'a': 1}}")
@@ -3670,6 +3686,13 @@ func Test_python3_keyboard_interrupt()
   call assert_equal(expected, getline(2, '$'))
   call assert_equal('', output)
   close!
+endfunc
+
+func Test_python3_non_utf8_string()
+  smap <Esc>@ <A-@>
+  py3 vim.command('redir => _tmp_smaps | smap | redir END')
+  py3 vim.eval('_tmp_smaps').splitlines()
+  sunmap <Esc>@
 endfunc
 
 func Test_python3_fold_hidden_buffer()

@@ -12,6 +12,7 @@ describe('|api-fast| functions', function()
   it('callable in a fast event', function()
     local out = exec_lua(function()
       local result
+      vim.uv.os_setenv('XTEST_FAST', 'x')
       local timer = assert(vim.uv.new_timer())
       timer:start(0, 0, function()
         timer:close()
@@ -21,10 +22,12 @@ describe('|api-fast| functions', function()
             byteidx = vim.fn.byteidx('héllo', 2),
             char2nr = vim.fn.char2nr('A'),
             charidx = vim.fn.charidx('héllo', 3),
+            getenv = vim.env.XTEST_FAST,
             in_fast = vim.in_fast_event(),
             keycode = vim.keycode('<C-a>'),
             keytrans = vim.fn.keytrans(vim.keycode('<C-Home>')),
             nr2char = vim.fn.nr2char(65),
+            nvim_chan_set = vim.api.nvim_chan_set(1, { detach = false }) == nil,
             nvim_create_autocmd = vim.api.nvim_create_autocmd('User', {
               pattern = 'Fast',
               callback = function() end,
@@ -54,10 +57,12 @@ describe('|api-fast| functions', function()
       byteidx = 3,
       char2nr = 65,
       charidx = 2,
+      getenv = 'x',
       in_fast = true,
       keycode = '\1', -- <C-a>
       keytrans = '<C-Home>',
       nr2char = 'A',
+      nvim_chan_set = true,
       nvim_create_autocmd = true,
       nvim_replace_termcodes = '\27', -- <Esc>
       str2list = { 65, 66 },
@@ -106,6 +111,11 @@ describe('|api-fast| functions', function()
         charidx = function()
           vim.fn.charidx(big, 500000)
         end,
+        getenv = function()
+          -- Unset, so getenv() computes it.
+          vim.env.VIMRUNTIME = nil
+          vim.fn.getenv('VIMRUNTIME')
+        end,
         keycode = function()
           vim.keycode('<C-a>')
         end,
@@ -114,6 +124,9 @@ describe('|api-fast| functions', function()
         end,
         nr2char = function()
           vim.fn.nr2char(65)
+        end,
+        nvim_chan_set = function()
+          vim.api.nvim_chan_set(1, { detach = false })
         end,
         nvim_create_autocmd = function()
           vim.api.nvim_exec_autocmds('User', { pattern = aupat })

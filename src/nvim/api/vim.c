@@ -58,6 +58,7 @@
 #include "nvim/mark_defs.h"
 #include "nvim/math.h"
 #include "nvim/mbyte.h"
+#include "nvim/mcursor.h"
 #include "nvim/memline.h"
 #include "nvim/memory.h"
 #include "nvim/memory_defs.h"
@@ -899,7 +900,7 @@ Union(Integer, String) nvim_echo(ArrayOf(Tuple(String, *HLGroupID)) chunks, Bool
     msg_no_more = true;
   }
   msg_ext_no_fast();
-  id = msg_multihl(opts->id, hl_msg, kind, history, opts->err, &msg_data, &needs_clear);
+  id = msg_multihl(opts->id, hl_msg, kind, history, opts->err, &msg_data, &needs_clear, false);
   if (opts->_truncate) {
     msg_no_more = false;
     msg_didany = save_msg_didany;
@@ -1144,12 +1145,6 @@ Integer nvim_open_term(Buffer buf, Dict(open_term) *opts, Error *err)
 {
   buf_T *b = api_buf_ensure_loaded(buf, err);
   if (!b) {
-    return 0;
-  }
-
-  // Refuse to repurpose the cmdwin buffer.
-  if (bt_cmdwin(b)) {
-    api_set_error(err, kErrorTypeException, "%s", _(e_cmdwin));
     return 0;
   }
 
@@ -1757,22 +1752,43 @@ void nvim_set_client_info(uint64_t channel_id, String name, Dict version, String
   rpc_set_client_info(channel_id, copy_dict(info, NULL));
 }
 
-/// Sets the detach flag for the channel.
+/// Sets channel properties.
 ///
-/// Detached channels do not trigger self-exit when they are closed.
-///
-/// @param channel_id
-/// @param detach   New detach value for the channel.
-/// @param[out] err Error details, if any.
-void nvim__chan_set_detach(uint64_t channel_id, Boolean detach, Error *err)
-  FUNC_API_SINCE(14) FUNC_API_REMOTE_ONLY
+/// @param chan Channel id, or 0 for current (RPC) channel.
+/// @param config Properties:
+///     - addr: (string) Address the peer uses to reach this server. Client-side hint, for when the
+///       peer is on another system and can't directly reach |serverlist()| addresses (e.g.
+///       a |remote-ssh| tunnel). |:restart| emits this to reconnect remote UIs.
+///     - detach: (boolean, default: true) Closing the channel does not self-exit Nvim. Nvim
+///       self-exits when the last `detach=false` |RPC| channel closes. See also |:detach!|.
+///     - trust: (boolean, default: true) Trust the peer: allow its incoming |RPC| |API| calls. Set
+///       to false for untrusted (remote) peers.
+/// @param[out] err Error details, if any
+void nvim_chan_set(uint64_t channel_id, Integer chan, Dict(chan_set) *config, Error *err)
+  FUNC_API_SINCE(15) FUNC_API_FAST
 {
-  Channel *chan = find_channel(channel_id);
-  VALIDATE(chan != NULL, "%s", e_invchan, {
+  if (chan == 0 && !is_internal_call(channel_id)) {
+    chan = (Integer)channel_id;
+  }
+  Channel *channel = find_channel((uint64_t)chan);
+  VALIDATE_INT(channel != NULL, "chan", chan, {
     return;
   });
 
-  chan->detach = (bool)detach;
+  if (HAS_KEY(config, chan_set, detach)) {
+    channel->detach = config->detach;
+  }
+  if (HAS_KEY(config, chan_set, trust)) {
+    channel->trust = config->trust;
+  }
+  if (HAS_KEY(config, chan_set, addr)) {
+    xfree(channel->addr);
+    channel->addr = config->addr.size ? string_to_cstr(config->addr) : NULL;
+  }
+  if (HAS_KEY(config, chan_set, detach) || HAS_KEY(config, chan_set, trust)
+      || HAS_KEY(config, chan_set, addr)) {
+    channel_event(channel, EVENT_CHANINFO);
+  }
 }
 
 /// Records the cmdwin scratchbuf and type, or clears both when type="" / buf=0. Internal use only.
@@ -1798,17 +1814,20 @@ void nvim__cmdwin_set(String type, Buffer buf, Error *err)
 
 /// Gets information about a channel.
 ///
-/// See |nvim_list_uis()| for an example of how to get channel info.
+/// The docs for |nvim_list_uis()| show an example.
 ///
-/// @param chan channel_id, or 0 for current channel
+/// @param chan Channel id, or 0 for current (RPC) channel
 /// @returns Channel info dict with these keys:
-///    - "id"       Channel id.
+///    - "addr"     (optional) Address the peer/client uses to reach this server. |nvim_chan_set()|
 ///    - "argv"     (optional) Job arguments list.
-///    - "stream"   Stream underlying the channel.
-///         - "stdio"      stdin and stdout of this Nvim instance
-///         - "stderr"     stderr of this Nvim instance
-///         - "socket"     TCP/IP socket or named pipe
-///         - "job"        Job with communication over its stdio.
+///    - "buf"      (optional) Buffer connected to |terminal| instance.
+///    - "buffer"   (optional) Deprecated alias for `buf`.
+///    - "client"   (optional) Info about the peer (client on the other end of the channel), as set
+///                 by |nvim_set_client_info()|.
+///    - "detach"   (optional) Closing the |RPC| channel does not exit Nvim. |nvim_chan_set()|
+///    - "exitcode" (optional) Exit code of the |terminal| process.
+///    - "id"       Channel id.
+///    - "internal" (optional) In-process channel (stream=socket).
 ///    - "mode"     How data received on the channel is interpreted.
 ///         - "bytes"      Send and receive raw bytes.
 ///         - "terminal"   |terminal| instance interprets ASCII sequences.
@@ -1816,12 +1835,12 @@ void nvim__cmdwin_set(String type, Buffer buf, Error *err)
 ///    - "pty"      (optional) Name of pseudoterminal. On a POSIX system this is a device path like
 ///                 "/dev/pts/1". If unknown, the key will still be present if a pty is used (e.g.
 ///                 for conpty on Windows).
-///    - "buf"      (optional) Buffer connected to |terminal| instance.
-///    - "buffer"   (optional) Deprecated alias for `buf`.
-///    - "client"   (optional) Info about the peer (client on the other end of the channel), as set
-///                 by |nvim_set_client_info()|.
-///    - "exitcode" (optional) Exit code of the |terminal| process.
-///
+///    - "stream"   Stream underlying the channel.
+///         - "stdio"      stdin and stdout of this Nvim instance
+///         - "stderr"     stderr of this Nvim instance
+///         - "socket"     TCP/IP socket or named pipe
+///         - "job"        Job with communication over its stdio.
+///    - "trust"    (optional) Trust the peer: allow its incoming |RPC| |API| calls. |nvim_chan_set()|
 Dict nvim_get_chan_info(uint64_t channel_id, Integer chan, Arena *arena, Error *err)
   FUNC_API_SINCE(4)
 {
@@ -2198,8 +2217,8 @@ Tuple(Integer, Integer, Buffer, String) nvim_get_mark(String name, Dict(empty) *
 ///
 /// @param str Statusline string (see 'statusline').
 /// @param opts Optional parameters.
-///           - fillchar: (string) Character to fill blank spaces in the statusline (see
-///                                'fillchars'). Treated as single-width even if it isn't.
+///           - fillchar: (string) Single-width character to fill blank spaces
+///                                in the statusline (see 'fillchars').
 ///           - highlights: (boolean) Return highlight information.
 ///           - maxwidth: (number) Maximum width of statusline.
 ///           - use_statuscol_lnum: (number) Evaluate statuscolumn for this line number instead of statusline.
@@ -2229,7 +2248,8 @@ DictAs(eval_statusline_ret) nvim_eval_statusline(String str, Dict(eval_statuslin
   int statuscol_lnum = 0;
 
   if (str.size < 2 || memcmp(str.data, "%!", 2) != 0) {
-    const char *const errmsg = check_stl_option(str.data);
+    const CharBuf errbuf = { (char[ERR_BUFLEN]){ 0 }, ERR_BUFLEN };
+    const char *const errmsg = check_stl_option(str.data, &errbuf);
     VALIDATE(!errmsg, "%s", errmsg, {
       return result;
     });
@@ -2238,21 +2258,20 @@ DictAs(eval_statusline_ret) nvim_eval_statusline(String str, Dict(eval_statuslin
   Window window = opts->winid;
 
   if (HAS_KEY(opts, eval_statusline, fillchar)) {
-    VALIDATE_EXP((*opts->fillchar.data != 0
-                  && ((size_t)utfc_ptr2len(opts->fillchar.data) == opts->fillchar.size)),
-                 "fillchar", "single character", NULL, {
+    StrCharInfo ci = utf_ptr2StrCharInfo(opts->fillchar.data);
+    ClusterInfo cli = utf_ClusterInfo(ci);
+
+    VALIDATE_EXP((*ci.ptr != 0 && *cli.next.ptr == NUL && cli.cells == 1),
+                 "fillchar", "one single-width character", NULL, {
       return result;
     });
-    int c;
-    fillchar = utfc_ptr2schar(opts->fillchar.data, &c);
-    // TODO(bfredl): actually check c is single width
+    fillchar = schar_from_cluster(ci, cli);
   }
 
   int use_bools = (int)opts->use_winbar + (int)opts->use_tabline;
 
   win_T *wp = opts->use_tabline ? curwin : find_window_by_handle(window, err);
   if (wp == NULL) {
-    api_set_error(err, kErrorTypeException, "unknown winid %d", window);
     return result;
   }
 
@@ -2320,7 +2339,7 @@ DictAs(eval_statusline_ret) nvim_eval_statusline(String str, Dict(eval_statuslin
   }
 
   result = arena_dict(arena, 3);
-  char *buf = arena_alloc(arena, MAXPATHL, false);
+  const CharBuf buf = { arena_alloc(arena, MAXPATHL, false), MAXPATHL };
   stl_hlrec_t *hltab;
   size_t hltab_len = 0;
 
@@ -2328,7 +2347,7 @@ DictAs(eval_statusline_ret) nvim_eval_statusline(String str, Dict(eval_statuslin
   int p_crb_save = wp->w_p_crb;
   wp->w_p_crb = false;
 
-  int width = build_stl_str_hl(wp, buf, MAXPATHL, str.data, -1, 0, fillchar, maxwidth,
+  int width = build_stl_str_hl(wp, buf, str.data, -1, 0, fillchar, maxwidth,
                                opts->highlights ? &hltab : NULL, &hltab_len, NULL,
                                statuscol_lnum ? &statuscol : NULL);
 
@@ -2345,7 +2364,7 @@ DictAs(eval_statusline_ret) nvim_eval_statusline(String str, Dict(eval_statuslin
     // add the default highlight at the beginning of the highlight list
     const char *dfltname = get_default_stl_hl(opts->use_tabline ? NULL : wp,
                                               opts->use_winbar, stc_hl_id);
-    if (hltab->start == NULL || (hltab->start - buf) != 0) {
+    if (hltab->start == NULL || (hltab->start - buf.data) != 0) {
       Dict hl_info = arena_dict(arena, 3);
       PUT_C(hl_info, "start", INTEGER_OBJ(0));
       PUT_C(hl_info, "group", CSTR_AS_OBJ(dfltname));
@@ -2369,7 +2388,7 @@ DictAs(eval_statusline_ret) nvim_eval_statusline(String str, Dict(eval_statuslin
       const char *combine = sp->item == STL_SIGNCOL ? syn_id2name(scl_hl_id)
                                                     : sp->item == STL_FOLDCOL ? grpname : dfltname;
       Dict hl_info = arena_dict(arena, 3);
-      PUT_C(hl_info, "start", INTEGER_OBJ(sp->start - buf));
+      PUT_C(hl_info, "start", INTEGER_OBJ(sp->start - buf.data));
       PUT_C(hl_info, "group", CSTR_AS_OBJ(grpname));
       Array groups = arena_array(arena, 1 + (combine != grpname));
       if (combine != grpname) {
@@ -2381,7 +2400,7 @@ DictAs(eval_statusline_ret) nvim_eval_statusline(String str, Dict(eval_statuslin
     }
     PUT_C(result, "highlights", ARRAY_OBJ(hl_values));
   }
-  PUT_C(result, "str", CSTR_AS_OBJ(buf));
+  PUT_C(result, "str", CSTR_AS_OBJ(buf.data));
 
   return result;
 }
@@ -2393,9 +2412,10 @@ DictAs(eval_statusline_ret) nvim_eval_statusline(String str, Dict(eval_statuslin
 /// @param opts   Optional parameters.
 ///       - info: (string) info text.
 /// @return Dict containing these keys:
-///       - winid: (number) floating window id
-///       - bufnr: (number) buffer id in floating window
-DictOf(Float) nvim__complete_set(Integer index, Dict(complete_set) *opts, Arena *arena, Error *err)
+///       - winid: (integer) floating window id
+///       - bufnr: (integer) buffer id in floating window
+DictOf(Integer) nvim__complete_set(Integer index, Dict(complete_set) *opts, Arena *arena,
+                                   Error *err)
 {
   Dict rv = arena_dict(arena, 2);
   if ((get_cot_flags() & kOptCotFlagPopup) == 0) {

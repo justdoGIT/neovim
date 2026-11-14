@@ -1,6 +1,6 @@
 " Script to define the syntax menu in synmenu.vim
 " Maintainer:		The Vim Project <https://github.com/vim/vim>
-" Last Change:		2026 Aug 06
+" Last Change:		2026 Nov 5
 " Former Maintainer:	Bram Moolenaar <Bram@vim.org>
 
 " This is used by "make menu" in the src directory.
@@ -20,6 +20,7 @@ let s:cur_menu_item = 0
 let s:cur_menu_char = ""
 
 fun! <SID>Syn(arg)
+  " Arg: Menu.SubMenu:syntax
   " isolate menu name: until the first dot
   let i = match(a:arg, '\.')
   let menu_name = strpart(a:arg, 0, i)
@@ -77,6 +78,7 @@ SynMenu AB.Arc\ Macro\ Language:aml
 SynMenu AB.Arch\ inventory:arch
 SynMenu AB.Arduino:arduino
 SynMenu AB.ART:art
+SynMenu AB.Ascend\ C:ascendc
 SynMenu AB.Ascii\ Doc:asciidoc
 SynMenu AB.ASP\ with\ VBScript:aspvbs
 SynMenu AB.ASP\ with\ Perl:aspperl
@@ -115,8 +117,10 @@ SynMenu AB.Basic.FreeBasic:freebasic
 SynMenu AB.Basic.IBasic:ibasic
 SynMenu AB.Basic.QBasic:basic
 SynMenu AB.Basic.Visual\ Basic:vb
+SynMenu AB.Bats:bats
 SynMenu AB.Bazaar\ commit\ file:bzr
 SynMenu AB.Bazel:bzl
+SynMenu AB.Bazel\ rc\ file:bazelrc
 SynMenu AB.BC\ calculator:bc
 SynMenu AB.BDF\ font:bdf
 SynMenu AB.Beancount:beancount
@@ -328,6 +332,7 @@ SynMenu HIJK.Hex\ dump.XXD:xxd
 SynMenu HIJK.Hex\ dump.Intel\ MCS51:hex
 SynMenu HIJK.Hg\ commit:hgcommit
 SynMenu HIJK.HIP:hip
+SynMenu HIJK.HLSL:hlsl
 SynMenu HIJK.HLSPlaylist:hlsplaylist
 SynMenu HIJK.Hollywood:hollywood
 SynMenu HIJK.HTML.HTML:html
@@ -344,6 +349,7 @@ SynMenu HIJK.Hosts\ access:hostsaccess
 SynMenu HIJK.Hyper\ Builder:hb
 SynMenu HIJK.Hyprlang:hyprlang
 SynMenu HIJK.I3Config:i3config
+SynMenu HIJK.Icalendar:icalendar
 SynMenu HIJK.Icewm\ menu:icemenu
 SynMenu HIJK.Icon:icon
 SynMenu HIJK.IDL\Generic\ IDL:idl
@@ -601,6 +607,7 @@ SynMenu R.R.R\ noweb:rnoweb
 SynMenu R.Racc\ input:racc
 SynMenu R.Racket:racket
 SynMenu R.Radiance:radiance
+SynMenu R.Radvd\ config:radvd
 SynMenu R.Raml:raml
 SynMenu R.Rapid:rapid
 SynMenu R.Rasi:rasi
@@ -730,6 +737,7 @@ SynMenu Sn-Sy.Structurizr:structurizr
 SynMenu Sn-Sy.Stylus:stylus
 SynMenu Sn-Sy.Subversion\ commit:svn
 SynMenu Sn-Sy.Sudoers:sudoers
+SynMenu Sn-Sy.Svelt:svelte
 SynMenu Sn-Sy.SVG:svg
 SynMenu Sn-Sy.Swayconfig:swayconfig
 SynMenu Sn-Sy.Swift.Swift:swift

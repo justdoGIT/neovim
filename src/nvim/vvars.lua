@@ -27,6 +27,13 @@ M.vars = {
       See |v:argf| to get only file args, without other options.
     ]=],
   },
+  cascading = {
+    type = 'boolean',
+    desc = [=[
+      |v:true| during |multicursor| cascade, |v:false| otherwise.
+      Read-only.
+    ]=],
+  },
   char = {
     type = 'string',
     desc = [=[
@@ -782,9 +789,10 @@ M.vars = {
     type = 'string',
     desc = [=[
       The reason Nvim started. Possible values:
-      - "normal"    Normal startup, yearning for life, etc.
-      - "restart"   Started by |:restart|.
-      - "restart!"  Started by |:restart!|.
+      - "normal"      Normal startup, yearning for life, etc.
+      - "restart"     Started by |:restart|.
+      - "restart!"    Started by |:restart!|.
+      - "remote-ssh"  Started by |remote-ssh|.
 
       Read-only.
     ]=],
@@ -886,10 +894,10 @@ M.vars = {
   termresponse = {
     type = 'string',
     desc = [=[
-      The value of the most recent OSC or DCS control sequence
-      received by Nvim from the terminal. This can be read in a
-      |TermResponse| event handler after querying the terminal using
-      another escape sequence.
+      The most recent OSC, DCS, APC, or recognized CSI (DA1, kitty
+      multiple-cursors) control sequence received by Nvim from the
+      host-terminal. Can be read in a |TermResponse| event handler
+      after querying the terminal.
     ]=],
   },
   testing = {

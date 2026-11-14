@@ -485,7 +485,6 @@ describe('search cmdline', function()
       {9:E35: No previous regular expression}     |
       {6:Press ENTER or type command to continue}^ |
     ]])
-    feed('<CR>')
     eq({
       lnum = 1,
       leftcol = 0,
@@ -916,7 +915,7 @@ describe('Search highlight', function()
     screen:expect([[
       xxx {101:y}{100:yy}{17: zzz}                             |
       {17:xxx }{100:yyy}{17: zzz}                             |
-      {17:xxx }{100:y}{101:^yy} zzz                             |
+      {17:xxx }{100:y^y}{101:y} zzz                             |
       {1:~                                       }|*2
       {5:-- VISUAL --}                            |
     ]])

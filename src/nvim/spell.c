@@ -2601,14 +2601,16 @@ bool check_need_cap(win_T *wp, linenr_T lnum, colnr_T col)
       if (*skipwhite(line) == NUL) {
         need_cap = true;
       } else {
+        colnr_T len = ml_get_buf_len(wp->w_buffer, lnum - 1);
         // Append a space in place of the line break.
         line_copy = concat_str(line, " ");
         line = line_copy;
-        endcol = (colnr_T)strlen(line);
+        endcol = len + 1;
       }
     }
   } else {
-    endcol = col;
+    colnr_T len = ml_get_buf_len(wp->w_buffer, lnum);
+    endcol = MIN(col, len);
   }
 
   if (endcol > 0) {
@@ -3674,6 +3676,11 @@ bool valid_spellfile(const char *val)
     if (l >= MAXPATHL - 4 || l < 4 || strcmp(spf_name + l - 4, ".add") != 0) {
       return false;
     }
+#ifdef BACKSLASH_IN_FILENAME
+    // The setter converts backslashes to slashes after validation.
+    // Do the same here before checking 'isfname'.
+    path_to_slash(spf_name);
+#endif
     for (char *s = spf_name; *s != NUL; s++) {
       if (!vim_is_fname_char((uint8_t)(*s))) {
         return false;
@@ -3696,26 +3703,22 @@ const char *did_set_spell_option(void)
   return errmsg;
 }
 
-/// Set curbuf->b_cap_prog to the regexp program for 'spellcapcheck'.
-/// Return error message when failed, NULL when OK.
-const char *compile_cap_prog(synblock_T *synblock)
-  FUNC_ATTR_NONNULL_ALL
+/// Compile 'spellcapcheck', replacing the old program only on success.
+/// Return an error message when failed, NULL when OK.
+const char *compile_cap_prog(const char *value, regprog_T **prog)
 {
-  regprog_T *rp = synblock->b_cap_prog;
-
-  if (synblock->b_p_spc == NULL || *synblock->b_p_spc == NUL) {
-    synblock->b_cap_prog = NULL;
-  } else {
+  regprog_T *rp = NULL;
+  if (value != NULL && *value != NUL) {
     // Prepend a ^ so that we only match at one column
-    char *re = concat_str("^", synblock->b_p_spc);
-    synblock->b_cap_prog = vim_regcomp(re, RE_MAGIC);
+    char *re = concat_str("^", value);
+    rp = vim_regcomp(re, RE_MAGIC);
     xfree(re);
-    if (synblock->b_cap_prog == NULL) {
-      synblock->b_cap_prog = rp;         // restore the previous program
+    if (rp == NULL) {
       return e_invarg;
     }
   }
 
-  vim_regfree(rp);
+  vim_regfree(*prog);
+  *prog = rp;
   return NULL;
 }

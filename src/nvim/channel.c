@@ -226,7 +226,8 @@ Channel *channel_alloc(ChannelStreamType type)
   chan->refcount = 1;
   chan->exit_status = -1;
   chan->streamtype = type;
-  chan->detach = false;
+  chan->detach = type != kChannelStreamStdio;
+  chan->trust = true;  // TODO(justinmk): default to false?
   assert(chan->id <= VARNUMBER_MAX);
   pmap_put(uint64_t)(&channels, chan->id, chan);
   return chan;
@@ -311,6 +312,7 @@ static void channel_destroy(Channel *chan)
   callback_free(&chan->on_exit);
 
   multiqueue_free(chan->events);
+  xfree(chan->addr);
   xfree(chan);
 }
 
@@ -480,8 +482,8 @@ Channel *channel_job_start(char **argv, const char *exepath, CallbackReader on_s
   return chan;
 }
 
-uint64_t channel_connect(bool tcp, const char *address, bool rpc, CallbackReader on_output,
-                         int timeout, const char **error)
+uint64_t channel_connect(bool tcp, const char *address, bool rpc, bool trust,
+                         CallbackReader on_output, int timeout, const char **error)
 {
   Channel *channel;
 
@@ -519,6 +521,7 @@ uint64_t channel_connect(bool tcp, const char *address, bool rpc, CallbackReader
   }
 
 end:
+  channel->trust = trust;
   channel_create_event(channel, address);
   return channel->id;
 }
@@ -568,18 +571,7 @@ uint64_t channel_from_stdio(bool rpc, CallbackReader on_output, const char **err
   if (embedded_mode && os_has_conpty_working()) {
     stdin_dup_fd = os_dup_cloexec(STDIN_FILENO);
     stdout_dup_fd = os_dup_cloexec(STDOUT_FILENO);
-    if (!GetConsoleWindow()) {
-      // Borrow the parent's console so CONOUT$ resolves to the real terminal,
-      // preserving io.stdout rendering (e.g. SIXEL/Kitty images). A replacement
-      // server started by :restart can reuse the current server's console.
-      // Only fall back to a hidden console when the parent has no console.
-      if (!AttachConsole(ATTACH_PARENT_PROCESS)) {
-        ILOG("parent console attach failed: %lu; allocating hidden console", GetLastError());
-        AllocConsole();
-        ShowWindow(GetConsoleWindow(), SW_HIDE);
-      }
-    }
-    os_reattach_console_stdio();
+    os_attach_parent_console();
   }
 #else
   if (embedded_mode) {
@@ -1002,7 +994,7 @@ Dict channel_info(uint64_t id, Arena *arena)
     return (Dict)ARRAY_DICT_INIT;
   }
 
-  Dict info = arena_dict(arena, 9);
+  Dict info = arena_dict(arena, 10);
   PUT_C(info, "id", INTEGER_OBJ((Integer)chan->id));
 
   const char *stream_desc, *mode_desc;
@@ -1045,10 +1037,15 @@ Dict channel_info(uint64_t id, Arena *arena)
     break;
   }
   PUT_C(info, "stream", CSTR_AS_OBJ(stream_desc));
+  if (chan->addr) {
+    PUT_C(info, "addr", CSTR_AS_OBJ(chan->addr));
+  }
 
   if (chan->is_rpc) {
     mode_desc = "rpc";
     PUT_C(info, "client", DICT_OBJ(chan->rpc.info));
+    PUT_C(info, "detach", BOOLEAN_OBJ(chan->detach));
+    PUT_C(info, "trust", BOOLEAN_OBJ(chan->trust));
   } else if (chan->term) {
     mode_desc = "terminal";
     PUT_C(info, "buf", BUFFER_OBJ(terminal_buf(chan->term)));

@@ -395,11 +395,14 @@ describe('vim.fs', function()
       t.write_file(root .. '/real/target', '')
       -- Directory symlink: follow=true descends into it, follow=false does not.
       vim.uv.fs_symlink(root .. '/real', root .. '/lnk', { junction = true, dir = true })
+      -- follow=true matches if symlink target has type=file. #42204
+      mkdir(root .. '/other')
+      vim.uv.fs_symlink(root .. '/real/target', root .. '/other/target')
 
-      local function find(follow)
+      local function find(follow, type_)
         local r = vim.fs.find('target', {
           path = root,
-          type = 'file',
+          type = type_ or 'file',
           limit = math.huge,
           follow = follow,
         })
@@ -407,8 +410,17 @@ describe('vim.fs', function()
         return r
       end
 
-      eq({ root .. '/lnk/target', root .. '/real/target' }, find(true))
+      eq({ root .. '/lnk/target', root .. '/other/target', root .. '/real/target' }, find(true))
       eq({ root .. '/real/target' }, find(false))
+      eq({ root .. '/other/target' }, find(false, 'link'))
+
+      local function find_up(follow)
+        return vim.fs.find(function(name)
+          return name == 'target'
+        end, { path = root .. '/other', upward = true, type = 'file', follow = follow })
+      end
+      eq({ root .. '/other/target' }, find_up(true))
+      eq({}, find_up(false))
     end)
 
     it('follow=true handles symlink loop', function()
@@ -607,6 +619,18 @@ describe('vim.fs', function()
 
     it('works with a filename argument', function()
       eq(test_source_path, exec_lua([[return vim.fs.root(..., 'CMakePresets.json')]], nvim_prog))
+      eq_paths(
+        test_source_path,
+        exec_lua([[return vim.fs.root(vim.uri.from_fname(...), 'CMakePresets.json')]], nvim_prog)
+      )
+      -- Scheme is case-insensitive.
+      eq_paths(
+        test_source_path,
+        exec_lua(
+          [[return vim.fs.root(vim.uri.from_fname(...):gsub('^file:', 'FILE:'), 'CMakePresets.json')]],
+          nvim_prog
+        )
+      )
     end)
 
     it('works with a relative path', function()
@@ -630,11 +654,11 @@ describe('vim.fs', function()
       eq_paths(test_source_path, exec_lua([[return vim.fs.root(0, 'CMakePresets.json')]]))
     end)
 
-    it('returns CWD (absolute path) if no match is found', function()
+    it('returns CWD (absolute path) for a URL', function()
       assert(n.fn.isabsolutepath(test_source_path) == 1)
       eq_paths(
         test_source_path,
-        exec_lua([[return vim.fs.root('file://bogus', 'CMakePresets.json')]])
+        exec_lua([[return vim.fs.root('foo://bogus', 'CMakePresets.json')]])
       )
     end)
   end)
@@ -918,6 +942,13 @@ describe('vim.fs', function()
         eq('/foo/../.', vim.fs.abspath('/foo/../.'))
         eq('/foo/bar', vim.fs.abspath('/foo/bar'))
       end
+      eq('fugitive:///repo/.git//0/a', vim.fs.abspath('fugitive:///repo/.git//0/a'))
+      eq('deno:/https/deno.land/a', vim.fs.abspath('deno:/https/deno.land/a'))
+      -- Drive letter, not a URL scheme.
+      eq(
+        { false, false },
+        { vim._core.path_is_url([[C:\foo\bar]]), vim._core.path_is_url('C:/foo') }
+      )
     end)
 
     it('with `cwd`', function()
@@ -1019,14 +1050,14 @@ describe('vim.fs', function()
       -- File
       vim.uv.fs_symlink('Xtest_fs-rm/file-to-link', 'Xtest_fs-rm/file-as-link')
       vim.fs.rm('Xtest_fs-rm/file-as-link')
-      eq(vim.uv.fs_stat('Xtest_fs-rm/file-as-link'), nil)
+      eq(nil, vim.uv.fs_stat('Xtest_fs-rm/file-as-link'))
       eq({ 'File to link' }, fn.readfile('Xtest_fs-rm/file-to-link'))
 
       -- Directory
       local function assert_rm_symlinked_dir(opts)
         vim.uv.fs_symlink('Xtest_fs-rm/dir-to-link', 'Xtest_fs-rm/dir-as-link')
         vim.fs.rm('Xtest_fs-rm/dir-as-link', opts)
-        eq(vim.uv.fs_stat('Xtest_fs-rm/dir-as-link'), nil)
+        eq(nil, vim.uv.fs_stat('Xtest_fs-rm/dir-as-link'))
         eq({ 'File in dir to link' }, fn.readfile('Xtest_fs-rm/dir-to-link/file'))
       end
 

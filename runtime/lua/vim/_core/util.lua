@@ -2,6 +2,46 @@
 
 local M = {}
 
+-- Generated from async.nvim/lua/async/_errors.lua: start
+local nil_error = 'error(nil)'
+
+--- Normalize a failed Lua operation for error slots where `nil` means success.
+--- @param err any
+--- @return any
+--- @private
+function M._normalize_error(err)
+  return err == nil and nil_error or err
+end
+
+--- Convert an error to a string without letting its metamethod interrupt cleanup.
+--- @param err any
+--- @return string
+--- @private
+function M._stringify_error(err)
+  local ok, message = pcall(tostring, err)
+  return ok and message or '<unprintable error>'
+end
+-- Generated from async.nvim/lua/async/_errors.lua: end
+
+-- Generated from async.nvim/lua/async/_util.lua: start
+--- Create a function that runs a function when it is garbage collected.
+--- @generic F : function
+--- @param f F
+--- @param gc fun()
+--- @return F
+--- @private
+function M._gc_fun(f, gc)
+  local proxy = newproxy(true)
+  local proxy_mt = getmetatable(proxy)
+  proxy_mt.__gc = gc
+
+  return function(...)
+    local _ = proxy
+    return f(...)
+  end
+end
+-- Generated from async.nvim/lua/async/_util.lua: end
+
 --- Adds one or more blank lines above or below the cursor.
 --- @param above? boolean Place blank line(s) above the cursor
 local function add_blank(above)
@@ -31,10 +71,11 @@ function M.get_buf_by_name(name)
 end
 
 --- Edit a file in a specific window
---- @param winnr number
+--- @param winnr integer
 --- @param file string
 --- @return number buffer number of the edited buffer
 M.edit_in = function(winnr, file)
+  --- @param path string?
   local function resolved_path(path)
     if not path or path == '' then
       return ''
@@ -61,11 +102,9 @@ end
 --- @param file string
 --- @param mods string|vim.api.keyset.cmd_mods Modifier string ("vertical") or structured mods table.
 function M.wrapped_edit(file, mods)
-  assert(mods)
   if type(mods) == 'string' then
-    mods = vim.api.nvim_parse_cmd(mods .. ' edit').mods --[[@as vim.api.keyset.cmd_mods]]
+    mods = vim.api.nvim_parse_cmd(mods .. ' edit').mods
   end
-  --- @cast mods vim.api.keyset.cmd_mods
   if (mods.tab or 0) > 0 or (mods.split or '') ~= '' or mods.horizontal or mods.vertical then
     local buf = M.get_buf_by_name(file)
     if buf == nil then
@@ -78,7 +117,7 @@ end
 
 --- Read a chunk of data from a file
 --- @param file string
---- @param size number
+--- @param size integer
 --- @return string? chunk or nil on error
 function M.read_chunk(file, size)
   local fd = io.open(file, 'rb')
@@ -121,9 +160,24 @@ function M.term_exitcode()
 
   local info = vim.api.nvim_get_chan_info(chan_id)
   if info.exitcode and info.exitcode >= 0 then
-    return string.format('[Exit: %d]', info.exitcode)
+    -- use non-breaking space to avoid fillchar
+    return string.format('[Exit:\226\128\175%d]', info.exitcode)
   end
   return ''
+end
+
+--- Returns the hostname for the bottom-left (or global) statusline, if Nvim is running in a SSH
+--- session (e.g. |remote-ssh|). Else empty.
+---
+--- @return string
+function M.remote_host()
+  if not vim.env.SSH_CONNECTION then
+    return ''
+  end
+  local win = vim.fn.winnr()
+  -- No window below or left of it (floats always have one).
+  local bottom_left = vim.fn.winnr('j') == win and vim.fn.winnr('h') == win
+  return (vim.o.laststatus == 3 or bottom_left) and vim.fn.hostname() or ''
 end
 
 --- Compute a link to a target on a forge host
@@ -175,9 +229,12 @@ function M.cmd_errmsg(err)
   return (err:gsub('^Lua:%s*', ''))
 end
 
---- Utility function for displaying vim error codes (EXX)
+--- Display a Vim error code (EXX), or raise an error without editor APIs.
 --- @param msg string
 function M.echo_err(msg)
+  if not vim.api then
+    error(msg, 2)
+  end
   vim.api.nvim_echo({ { msg } }, true, { err = true })
 end
 
@@ -187,9 +244,11 @@ end
 --- @param name string Plugin name, e.g. "zip".
 --- @param msg string
 --- @param level? integer Level from |vim.log.levels|. Defaults to ERROR.
-function M.notify(name, msg, level)
+--- @param once? boolean Only show the message once.
+function M.notify(name, msg, level, once)
   vim.schedule(function()
-    vim.notify(('%s: %s'):format(name, msg), level or vim.log.levels.ERROR)
+    local notify = once and vim.notify_once or vim.notify
+    notify(('%s: %s'):format(name, msg), level or vim.log.levels.ERROR)
   end)
 end
 

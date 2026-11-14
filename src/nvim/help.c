@@ -158,7 +158,7 @@ void ex_help(exarg_T *eap)
     } else {
       wp = NULL;
       FOR_ALL_WINDOWS_IN_TAB(wp2, curtab) {
-        if (bt_help(wp2->w_buffer) && !wp2->w_config.hide && wp2->w_config.focusable) {
+        if (bt_help(wp2->w_buffer) && win_is_focusable(wp2)) {
           wp = wp2;
           break;
         }
@@ -434,7 +434,7 @@ void prepare_help_buffer(void)
   if (strcmp(curbuf->b_p_isk, p) != 0) {
     set_option_direct(kOptIskeyword, CSTR_AS_OBJ(p), OPT_LOCAL, 0);
     check_buf_options(curbuf);
-    buf_init_chartab(curbuf, false);
+    buf_init_isk_chartab(curbuf);
   }
 
   // Don't use the global foldmethod.

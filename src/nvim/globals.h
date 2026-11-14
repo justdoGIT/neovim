@@ -183,7 +183,8 @@ EXTERN char *emsg_assert_fails_context INIT( = NULL);
 EXTERN bool did_endif INIT( = false);        // just had ":endif"
 EXTERN int did_emsg;                        // incremented by emsg() when a
                                             // message is displayed or thrown
-EXTERN bool called_vim_beep;                // set if vim_beep() is called
+EXTERN uint64_t did_beep;                   // Incremented by vim_beep(), if not silenced.
+EXTERN uint64_t did_beep_silent;            // Incremented by vim_beep(), if silenced (emsg_silent).
 EXTERN bool did_emsg_syntax;                // did_emsg set because of a
                                             // syntax error
 EXTERN int called_emsg;                     // always incremented by emsg()
@@ -298,7 +299,7 @@ EXTERN bool garbage_collect_at_exit INIT( = false);
 
 // Script CTX being sourced or was sourced to define the current function.
 EXTERN sctx_T current_sctx INIT( = { 0, 0, 0, 0 });
-/// Last channel that invoked 'nvim_input` or got FocusGained.
+/// Last channel that invoked `nvim_input` or got FocusGained. Maybe not a UI, check remote_ui_attached().
 EXTERN uint64_t current_ui INIT( = 0);
 
 EXTERN bool did_source_packages INIT( = false);
@@ -493,7 +494,7 @@ EXTERN int inhibit_delete_count INIT( = 0);
 /// Encoding used when 'fencs' is set to "default"
 EXTERN char *fenc_default INIT( = NULL);
 
-/// "State" is the main state of Vim.
+/// "State" is the main state (editor-mode) of Vim.
 /// There are other variables that modify the state:
 ///    Visual_mode:    When State is MODE_NORMAL or MODE_INSERT.
 ///    finish_op  :    When State is MODE_NORMAL, after typing the operator and

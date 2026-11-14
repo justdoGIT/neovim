@@ -1,6 +1,8 @@
 --- @diagnostic disable: duplicate-doc-alias
 
----@param tbl table<string, string|number>
+---@generic T: string|number
+---@param tbl table<string, T>
+---@return T[]
 local function get_value_set(tbl)
   local value_set = {}
   for _, v in pairs(tbl) do
@@ -10,7 +12,7 @@ local function get_value_set(tbl)
   return value_set
 end
 
-local sysname = vim.uv.os_uname().sysname
+local sysname = assert(vim.uv.os_uname()).sysname
 
 --- @class vim.lsp.protocol.constants
 --- @nodoc
@@ -99,6 +101,7 @@ local constants = {
 
   -- Completion item tags are extra annotations that tweak the rendering of a
   -- completion item
+  ---@type table<string, lsp.CompletionItemTag>
   CompletionTag = {
     -- Render a completion as obsolete, usually using a strike-out.
     Deprecated = 1,
@@ -145,6 +148,7 @@ local constants = {
   },
 
   -- Extra annotations that tweak the rendering of a symbol.
+  ---@type table<string, lsp.SymbolTag>
   SymbolTag = {
     Deprecated = 1,
   },
@@ -583,6 +587,9 @@ function protocol.make_client_capabilities()
       callHierarchy = {
         dynamicRegistration = false,
       },
+      typeHierarchy = {
+        dynamicRegistration = false,
+      },
       colorProvider = {
         dynamicRegistration = true,
       },
@@ -607,9 +614,13 @@ function protocol.make_client_capabilities()
       didChangeConfiguration = {
         dynamicRegistration = false,
       },
+      executeCommand = {
+        dynamicRegistration = false,
+      },
       workspaceFolders = true,
       applyEdit = true,
       workspaceEdit = {
+        documentChanges = true,
         resourceOperations = { 'rename', 'create', 'delete' },
         normalizesLineEndings = true,
         changeAnnotationSupport = { groupsOnLabel = true },
@@ -631,6 +642,9 @@ function protocol.make_client_capabilities()
         refreshSupport = true,
       },
       diagnostics = {
+        refreshSupport = true,
+      },
+      foldingRange = {
         refreshSupport = true,
       },
       fileOperations = {

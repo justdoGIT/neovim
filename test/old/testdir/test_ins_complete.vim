@@ -3531,6 +3531,26 @@ func s:Tagfunc(t,f,o)
   return []
 endfunc
 
+" A match from an included file shows the file by its name under the current
+" directory, without the "./" of the include line.
+func Test_complete_included_file_name()
+  CheckRunVimInTerminal
+  call mkdir('Xincl/sub', 'pR')
+  call writefile(['let included_word = 1'], 'Xincl/sub/inc.vim')
+  call writefile(['source ./sub/inc.vim', ''], 'Xincl/main.vim')
+  let lines =<< trim END
+    setlocal include=^\\s*source\\s\\+ complete=i completeopt=menuone,noselect
+  END
+  call writefile(lines, 'Xincl/setup.vim')
+  let buf = RunVimInTerminal('-S Xincl/setup.vim Xincl/main.vim',
+        \ {'rows': 8, 'cols': 120})
+  call term_sendkeys(buf, "Goincluded_\<C-N>")
+  call WaitForAssert({-> assert_match('included_word\s\+Xincl/sub/inc.vim\s',
+        \ term_getline(buf, 4))})
+  call term_sendkeys(buf, "\<Esc>")
+  call StopVimInTerminal(buf)
+endfunc
+
 " This was using freed memory, since 'complete' was in a wiped out buffer.
 " Also using a window that was closed.
 func Test_tagfunc_wipes_out_buffer()
@@ -6849,6 +6869,296 @@ func Test_complete_info_hlgroup()
   delfunc DoComplete
   delfunc ShownItems
   bwipe!
+endfunc
+
+" Test that complete_info() tells a completion Vim started by itself from one
+" that a key asked for.
+func Test_complete_info_auto()
+  call Ntest_override("char_avail", 1)
+  new
+  func! AutoOmni(findstart, base)
+    if a:findstart
+      call add(g:auto, complete_info(['auto']).auto)
+      return 4
+    endif
+    return ['alpha', 'alphabet']
+  endfunc
+  setlocal omnifunc=AutoOmni
+  setlocal complete=o
+  setlocal completeopt=menuone
+  call setline(1, '    al')
+
+  " 'autocomplete' starts it, nothing was asked for.
+  setlocal autocomplete
+  let g:auto = []
+  call feedkeys("A\<Esc>", 'tx')
+  call assert_equal([1], g:auto)
+
+  " The second call is the one CTRL-X CTRL-O asked for.
+  let g:auto = []
+  call feedkeys("A\<C-X>\<C-O>\<Esc>", 'tx')
+  call assert_equal([1, 0], g:auto)
+
+  " CTRL-X CTRL-O is typed before 'autocompletedelay' expires.
+  set autocompletedelay=100
+  let g:auto = []
+  call feedkeys("A\<C-X>\<C-O>\<Esc>", 'tx')
+  call assert_equal([0], g:auto)
+
+  set autocompletedelay&
+  setlocal noautocomplete
+  let g:auto = []
+  call feedkeys("A\<C-X>\<C-O>\<Esc>", 'tx')
+  call assert_equal([0], g:auto)
+
+  call Ntest_override("ALL", 0)
+  unlet g:auto
+  delfunc AutoOmni
+  bwipe!
+endfunc
+
+" A completion asked for while 'autocompletedelay' runs is not given the
+" implicit "noselect" of autocompletion.
+func Test_complete_asked_for_during_delay()
+  call Ntest_override("char_avail", 1)
+  new
+  func! AutoOmni(findstart, base)
+    if a:findstart
+      return 4
+    endif
+    return ['alpha', 'alphabet']
+  endfunc
+  func! Selected()
+    let g:selected = complete_info(['selected']).selected
+    return ''
+  endfunc
+  setlocal omnifunc=AutoOmni
+  setlocal complete=o
+  setlocal completeopt=menuone
+  setlocal autocomplete
+  call setline(1, '    al')
+
+  " CTRL-X CTRL-O before the delay expires: the first match is selected,
+  " and taken.
+  set autocompletedelay=100
+  call feedkeys("A\<C-X>\<C-O>\<C-R>=Selected()\<CR>\<Esc>", 'tx')
+  call assert_equal(0, g:selected)
+  call assert_equal('    alpha', getline(1))
+
+  " What autocompletion puts up on its own selects nothing, so the word is
+  " left as it was.
+  set autocompletedelay&
+  call setline(1, '    al')
+  call feedkeys("A\<C-R>=Selected()\<CR>\<Esc>", 'tx')
+  call assert_equal(-1, g:selected)
+  call assert_equal('    al', getline(1))
+
+  call Ntest_override("ALL", 0)
+  unlet g:selected
+  delfunc AutoOmni
+  delfunc Selected
+  bwipe!
+endfunc
+
+func Test_complete_fuzzy_resort()
+  new
+  set completeopt=menu,menuone,noselect,fuzzy
+
+  inoremap <buffer> <F5> <Cmd>call complete(1, ['xxxb', 'xb', 'b'])<CR>
+  call feedkeys("i\<F5>b\<C-R>=string(map(complete_info(['items']).items, 'v:val.word'))\<CR>\<Esc>", 'tx')
+  call assert_equal("b['b', 'xb', 'xxxb']", getline(1))
+
+  %d _
+  call setline(1, ['xxxbar', 'xbar', 'bar'])
+  call feedkeys("Go\<C-P>b\<C-R>=string(map(complete_info(['items']).items, 'v:val.word'))\<CR>\<Esc>", 'tx')
+  call assert_equal("b['bar', 'xbar', 'xxxbar']", getline('$'))
+
+  bwipe!
+  set completeopt&
+endfunc
+
+" Test for 'complete' F{func} callbacks when using ":setglobal"
+func Test_complete_cpt_func_setglobal()
+  func! CptSetglobalOne(findstart, base)
+    if a:findstart
+      return col('.') - 1
+    endif
+    return ['one']
+  endfunc
+  func! CptSetglobalTwo(findstart, base)
+    if a:findstart
+      return col('.') - 1
+    endif
+    return ['two']
+  endfunc
+
+  new
+  setlocal complete=FCptSetglobalOne
+  " ":setglobal" does not change the buffer-local value
+  setglobal complete=t,FCptSetglobalTwo
+  exe "normal! i\<C-N>\<Esc>"
+  call assert_equal('one', getline(1))
+
+  " A new buffer uses the global value, the callbacks must match it
+  new
+  exe "normal! i\<C-N>\<Esc>"
+  call assert_equal('two', getline(1))
+  bwipe!
+  bwipe!
+
+  " When the global value has more entries than the buffer-local one, the
+  " callback array used to be indexed out of bounds
+  new
+  setlocal complete=.
+  setglobal complete=FCptSetglobalTwo,FCptSetglobalTwo,FCptSetglobalTwo,FCptSetglobalTwo,FCptSetglobalTwo,FCptSetglobalTwo,FCptSetglobalTwo,FCptSetglobalTwo
+  new
+  exe "normal! i\<C-N>\<Esc>"
+  call assert_equal('two', getline(1))
+  bwipe!
+  bwipe!
+
+  " ":setlocal" does not change the callbacks cached for the global value
+  new
+  setlocal complete=FCptSetglobalOne
+  new
+  exe "normal! i\<C-N>\<Esc>"
+  call assert_equal('two', getline(1))
+  bwipe!
+  bwipe!
+
+  set complete&
+  delfunc CptSetglobalOne
+  delfunc CptSetglobalTwo
+endfunc
+
+
+" change the completion value while being triggered
+func Test_complete_cpt_func_changes_complete()
+  func! CptChange(findstart, base)
+    if a:findstart
+      set complete=.
+      return col('.') - 1
+    endif
+    return ['changed']
+  endfunc
+
+  new
+  call setline(1, ['alpha', ''])
+  setlocal complete=FCptChange,FCptChange,FCptChange
+  exe "normal! Gi\<C-N>\<Esc>"
+  call assert_equal('alpha', getline(2))
+
+  set complete&
+  delfunc CptChange
+  bwipe!
+endfunc
+
+func Test_complete_fuzzy_keep_order_as_leader_changes()
+  new
+  set completeopt=menu,menuone,noselect,fuzzy
+  call setline(1, 'xbc xba')
+
+  let g:words = []
+  func! CollectWords()
+    call add(g:words, map(copy(complete_info(['items']).items), 'v:val.word'))
+    return ''
+  endfunc
+
+  call feedkeys("o\<C-N>b\<C-R>\<C-R>=CollectWords()\<CR>a\<BS>\<C-R>\<C-R>=CollectWords()\<CR>\<Esc>", 'tx')
+  call assert_equal(['xbc', 'xba'], g:words[0])
+  call assert_equal(['xbc', 'xba'], g:words[1])
+
+  delfunc CollectWords
+  unlet g:words
+  set completeopt&
+  bwipe!
+endfunc
+
+" Test that CTRL-X CTRL-F searches the directories in 'path'
+func Test_ins_complete_files_in_path()
+  call mkdir('Xfilecptdir/sub1', 'p')
+  call mkdir('Xfilecptdir/sub2', 'p')
+  call writefile(['one'], 'Xfilecptdir/one.txt')
+  call writefile(['sub1'], 'Xfilecptdir/sub1/two.txt')
+  call writefile(['sub2'], 'Xfilecptdir/sub2/two.txt')
+  call writefile(['cwd'], 'Xcwdfile.txt')
+
+  new
+  " complete a file name found in a directory in 'path'
+  set path=Xfilecptdir
+  call setline(1, 'on')
+  call feedkeys("A\<C-X>\<C-f>\<Esc>", 'tx')
+  call assert_equal('on', getline(1))
+
+  " consulting 'path' for file completion requires pathopt in 'completeopt'
+  set completeopt+=pathopt
+
+  " complete a file name found in a directory in 'path'
+  call setline(1, 'on')
+  call feedkeys("A\<C-X>\<C-f>\<Esc>", 'tx')
+  call assert_equal('one.txt', getline(1))
+
+  " complete a directory name found in a directory in 'path' followed by a file
+  call setline(1, 'su')
+  call feedkeys("A\<C-X>\<C-f>\<Esc>", 'tx')
+  call assert_equal('sub1/', substitute(getline(1), '\\', '/', 'g'))
+  call feedkeys("A\<C-X>\<C-f>\<Esc>", 'tx')
+  call assert_equal('sub1/two.txt', substitute(getline(1), '\\', '/', 'g'))
+
+  " when a file name is found in several directories in 'path', the
+  " directory is prepended to make the match unambiguous
+  set path=Xfilecptdir/sub1,Xfilecptdir/sub2
+  call setline(1, 'tw')
+  call feedkeys("A\<C-X>\<C-f>\<Esc>", 'tx')
+  call assert_equal('./Xfilecptdir/sub1/two.txt',
+        \ substitute(getline(1), '\\', '/', 'g'))
+  call setline(1, 'tw')
+  call feedkeys("A\<C-X>\<C-f>\<C-N>\<Esc>", 'tx')
+  call assert_equal('./Xfilecptdir/sub2/two.txt',
+        \ substitute(getline(1), '\\', '/', 'g'))
+
+  " a match starting with "./" is completed in the current directory only,
+  " 'path' is not used
+  set path=
+  call setline(1, './Xfilecptdir/on')
+  call feedkeys("A\<C-X>\<C-f>\<Esc>", 'tx')
+  call assert_equal('./Xfilecptdir/one.txt',
+        \ substitute(getline(1), '\\', '/', 'g'))
+
+  " a match starting with "../" is completed in the current directory only,
+  " 'path' is not used
+  cd Xfilecptdir/sub1
+  call setline(1, '../sub2/tw')
+  call feedkeys("A\<C-X>\<C-f>\<Esc>", 'tx')
+  call assert_equal('../sub2/two.txt',
+        \ substitute(getline(1), '\\', '/', 'g'))
+  cd ../..
+
+  " the current directory is not searched when it is not in 'path'
+  call setline(1, 'Xcwdfi')
+  call feedkeys("A\<C-X>\<C-f>\<Esc>", 'tx')
+  call assert_equal('Xcwdfi', getline(1))
+
+  " check the counter argument of above test
+  set path=,,
+  call feedkeys("A\<C-X>\<C-f>\<Esc>", 'tx')
+  call assert_equal('Xcwdfile.txt', getline(1))
+
+  " the completed file name can be opened with "gf" using 'path'
+  set path=Xfilecptdir
+  call setline(1, 'on')
+  call feedkeys("A\<C-X>\<C-f>\<Esc>", 'tx')
+  call assert_equal('one.txt', getline(1))
+  set nomodified
+  normal! gf
+  call assert_equal('one', getline(1))
+  call assert_equal('one.txt', fnamemodify(bufname(), ':t'))
+
+  %bwipe!
+  set path&
+  set completeopt&
+  call delete('Xcwdfile.txt')
+  call delete('Xfilecptdir', 'rf')
 endfunc
 
 " vim: shiftwidth=2 sts=2 expandtab nofoldenable

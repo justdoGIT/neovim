@@ -764,21 +764,21 @@ describe('statusline', function()
     screen:expect(s2)
     feed('v')
     screen:expect([[
-      ^                                        |
+      {17:^ }                                       |
       {1:~                                       }|*5
       {3:v                                       }|
       {5:-- VISUAL --}                            |
     ]])
     feed('V')
     screen:expect([[
-      ^                                        |
+      {17:^ }                                       |
       {1:~                                       }|*5
       {3:V                                       }|
       {5:-- VISUAL LINE --}                       |
     ]])
     feed('<C-V>')
     screen:expect([[
-      ^                                        |
+      {17:^ }                                       |
       {1:~                                       }|*5
       {3:^V                                      }|
       {5:-- VISUAL BLOCK --}                      |
@@ -795,14 +795,14 @@ describe('statusline', function()
     ]])
     feed('iabc<Esc>v')
     screen:expect([[
-      ab^c                                     |
+      ab{17:^c}                                     |
       {1:~                                       }|*5
       {3:v 3 3                                   }|
       {5:-- VISUAL --}                            |
     ]])
     feed('iw')
     screen:expect([[
-      {17:ab}^c                                     |
+      {17:ab^c}                                     |
       {1:~                                       }|*5
       {3:v 1 3                                   }|
       {5:-- VISUAL --}                            |
@@ -1124,6 +1124,62 @@ describe('statusline', function()
       --No lines in buffer--                  |
     ]])
   end)
+
+  it('works with highlight scopes', function()
+    screen:add_extra_attr_ids({
+      [131] = {
+        bold = true,
+        reverse = true,
+        background = Screen.colors.Green,
+      },
+      [132] = {
+        bold = true,
+        reverse = true,
+        background = Screen.colors.Green,
+        foreground = Screen.colors.Red,
+      },
+      [133] = {
+        bold = true,
+        reverse = true,
+        background = Screen.colors.Green,
+        foreground = Screen.colors.Red,
+        underline = true,
+      },
+      [134] = {
+        bold = true,
+        reverse = true,
+        background = Screen.colors.Green,
+        underline = true,
+      },
+    })
+    command('hi User1 guibg=green')
+    command('hi User2 guifg=red')
+    command('hi User3 gui=underline')
+    command('set laststatus=2')
+    command('set statusline=a%#User1#b%$User2$c%#(%$User3$d%#)e')
+    screen:expect([[
+      ^                                        |
+      {1:~                                       }|*5
+      {3:a}{131:b}{132:c}{133:d}{132:e                                   }|
+                                              |
+    ]])
+    command('set statusline=a%$User1$b%$User2$c%#(%$User3$d%#)e')
+    screen:expect_unchanged()
+    command('set statusline=a%#(%#User1#b%#(%$User2$c%#(%$User3$d%#)e%#)f%#)g')
+    screen:expect([[
+      ^                                        |
+      {1:~                                       }|*5
+      {3:a}{131:b}{132:c}{133:d}{132:e}{131:f}{3:g                                 }|
+                                              |
+    ]])
+    command('set statusline=a%#(%#User1#b%#(%$User2$c%#)d%#(%$User3$e%#)f%#)g')
+    screen:expect([[
+      ^                                        |
+      {1:~                                       }|*5
+      {3:a}{131:b}{132:c}{131:d}{134:e}{131:f}{3:g                                 }|
+                                              |
+    ]])
+  end)
 end)
 
 describe('default statusline', function()
@@ -1135,6 +1191,8 @@ describe('default statusline', function()
     screen:add_extra_attr_ids {
       [100] = { foreground = Screen.colors.Magenta1, bold = true },
       [131] = { foreground = Screen.colors.NvimDarkGreen },
+      [132] = { bold = true, background = Screen.colors.LightBlue, reverse = true },
+      [133] = { background = Screen.colors.LightBlue, reverse = true },
     }
     command('set laststatus=2')
     command('set ruler')
@@ -1151,15 +1209,16 @@ describe('default statusline', function()
     ]])
 
     local default_statusline = table.concat({
+      "%(%#(%#StatusLineRemote# @%.30(%{ v:lua.require('vim._core.util').remote_host() }%<%) %#) %)",
       '%<',
-      '%f %h%w%m%r ',
-      "%{% v:lua.require('vim._core.util').term_exitcode() %}",
-      '%=',
-      "%{% luaeval('(package.loaded[''vim.ui''] and vim.api.nvim_get_current_win() == tonumber(vim.g.actual_curwin or -1) and vim.ui.progress_status()) or '''' ')%}",
-      "%{% &showcmdloc == 'statusline' ? '%-10.S ' : '' %}",
-      "%{% exists('b:keymap_name') ? '<'..b:keymap_name..'> ' : '' %}",
-      "%{% &busy > 0 ? '◐ ' : '' %}",
-      "%{% luaeval('(package.loaded[''vim.diagnostic''] and next(vim.diagnostic.count()) and vim.diagnostic.status() .. '' '') or '''' ') %}",
+      '%f',
+      "%( %h%w%m%r%{ v:lua.require('vim._core.util').term_exitcode() }%)",
+      '%= ',
+      '%(%-10S %)',
+      "%{ &busy > 0 ? '◐\226\128\175' : '' }",
+      "%(%{ luaeval('(package.loaded[''vim.ui''] and vim.api.nvim_get_current_win() == tonumber(vim.g.actual_curwin or -1) and vim.ui.progress_status()) or '''' ')} %)",
+      "%{% luaeval('(package.loaded[''vim.diagnostic''] and next(vim.diagnostic.count(0)) and vim.diagnostic.status() .. '' '') or '''' ') %}",
+      '%(%k %)',
       "%{% &ruler ? &rulerformat : '' %}",
     })
 
@@ -1210,11 +1269,64 @@ describe('default statusline', function()
     screen:expect([[
       ^                                                            |
       {1:~                                                           }|*13
-      {3:[No Name]                               ◐ 0,0-1          All}|
+      {3:[No Name]                               ◐ 0,0-1          All}|
                                                                   |
     ]])
 
     exec_lua('vim.o.busy = 0')
+    screen:expect([[
+      ^                                                            |
+      {1:~                                                           }|*13
+      {3:[No Name]                                 0,0-1          All}|
+                                                                  |
+    ]])
+  end)
+
+  it('shows the hostname in an SSH session', function()
+    local function set_hostname(name)
+      exec_lua(function()
+        vim.fn.hostname = function()
+          return name
+        end
+      end)
+    end
+    set_hostname('host')
+    exec_lua("vim.o.statusline = ''")
+    command('let $SSH_CONNECTION = "10.0.0.1 50000 10.0.0.2 22" | redrawstatus')
+    screen:expect([[
+      ^                                                            |
+      {1:~                                                           }|*13
+      {132: @host }{3: [No Name]                         0,0-1          All}|
+                                                                  |
+    ]])
+
+    -- Only in the bottom-left statusline.
+    command('split | wincmd j | vsplit | wincmd k')
+    screen:expect([[
+      ^                                                            |
+      {1:~                                                           }|*6
+      {3:[No Name]                                 0,0-1          All}|
+                                    │                             |
+      {1:~                             }│{1:~                            }|*5
+      {133: @host }{2: <e] 0,0-1          All [No Name]  0,0-1          All}|
+                                                                  |
+    ]])
+
+    -- In the global statusline. Truncated from the right.
+    set_hostname(('h'):rep(40))
+    command('set laststatus=3 noruler')
+    screen:expect([[
+      ^                                                            |
+      {1:~                                                           }|*6
+      ──────────────────────────────┬─────────────────────────────|
+                                    │                             |
+      {1:~                             }│{1:~                            }|*5
+      {132: @hhhhhhhhhhhhhhhhhhhhhhhhhhhhh> }{3: [No Name]                 }|
+                                                                  |
+    ]])
+
+    command('set laststatus=2 ruler | only')
+    command('unlet $SSH_CONNECTION | redrawstatus')
     screen:expect([[
       ^                                                            |
       {1:~                                                           }|*13
@@ -1229,7 +1341,7 @@ describe('default statusline', function()
     api.nvim_set_option_value('shellcmdflag', 'EXIT', {})
     api.nvim_set_option_value('shellxquote', '', {}) -- win: avoid extra quotes
     command('terminal 9')
-    screen:expect({ any = '%[Exit: 9%]' })
+    screen:expect({ any = '%[Exit:\226\128\1759%]' })
     expect_exitcode(9)
   end)
 
@@ -1237,8 +1349,7 @@ describe('default statusline', function()
     exec_lua("vim.o.statusline = ''")
     local function get_progress()
       return exec_lua(function()
-        local stl_str = vim.ui.progress_status()
-        return vim.api.nvim_eval_statusline(stl_str, {}).str
+        return vim.ui.progress_status()
       end)
     end
 
@@ -1249,7 +1360,7 @@ describe('default statusline', function()
       true,
       { kind = 'progress', source = 'tests', title = 'test', status = 'running', percent = 10 }
     )
-    eq('10%(1) ', get_progress())
+    eq('10%(1)', get_progress())
 
     api.nvim_echo({ { 'searching' } }, true, {
       id = id1,
@@ -1259,7 +1370,7 @@ describe('default statusline', function()
       status = 'running',
       title = 'terminal(ripgrep)',
     })
-    eq('50%(1) ', get_progress())
+    eq('50%(1)', get_progress())
 
     api.nvim_echo({ { 'searching...' } }, true, {
       kind = 'progress',
@@ -1268,7 +1379,7 @@ describe('default statusline', function()
       status = 'running',
       percent = 20,
     })
-    eq('35%(2) ', get_progress())
+    eq('35%(2)', get_progress())
 
     api.nvim_echo({ { 'searching' } }, true, {
       id = id1,
@@ -1278,7 +1389,7 @@ describe('default statusline', function()
       status = 'success',
       title = 'terminal(ripgrep)',
     })
-    eq('20%(1) ', get_progress())
+    eq('20%(1)', get_progress())
 
     exec('redrawstatus')
     screen:expect([[

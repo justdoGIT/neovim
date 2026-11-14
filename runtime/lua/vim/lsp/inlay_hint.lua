@@ -27,7 +27,7 @@ local M = {}
 
 ---@class (private) InlayHints : vim.lsp.Capability
 ---@field active table<integer, InlayHints>
----@field client_state table<integer, vim.lsp.inlay_hint.ClientState>
+---@field client_state table<integer, vim.lsp.inlay_hint.ClientState?>
 local InlayHint = {
   name = 'inlay_hint',
   method = 'textDocument/inlayHint',
@@ -38,6 +38,7 @@ setmetatable(InlayHint, Capability)
 Capability.all[InlayHint.name] = InlayHint
 
 ---@package
+---@param bufnr integer
 function InlayHint:new(bufnr)
   self = Capability.new(self, bufnr)
 
@@ -51,6 +52,7 @@ function InlayHint:new(bufnr)
 end
 
 ---@package
+---@param client_id integer
 function InlayHint:on_attach(client_id)
   if not self.client_state[client_id] then
     self.client_state[client_id] = {
@@ -63,6 +65,7 @@ function InlayHint:on_attach(client_id)
 end
 
 ---@package
+---@param client_id integer
 function InlayHint:on_detach(client_id)
   local state = self.client_state[client_id]
   if state then
@@ -72,11 +75,13 @@ function InlayHint:on_detach(client_id)
 end
 
 ---@private
+---@param client_id integer
 function InlayHint:on_close(client_id)
   self:reset(client_id)
 end
 
 ---@private
+---@param client_id integer
 function InlayHint:on_change(client_id)
   self:refresh(client_id)
 end
@@ -135,9 +140,10 @@ end
 
 --- |lsp-handler| for the method `textDocument/inlayHint`
 --- Store hints for a specific buffer and client
+---@param err lsp.ResponseError?
 ---@param result lsp.InlayHint[]?
 ---@param ctx lsp.HandlerContext
----@private
+---@internal
 function M.on_inlayhint(err, result, ctx)
   local bufnr = assert(ctx.bufnr)
   local provider = InlayHint.active[bufnr]
@@ -169,16 +175,6 @@ function M.on_inlayhint(err, result, ctx)
   result = result or {}
 
   local new_lnum_hints = {} ---@type table<integer, vim.lsp.inlay_hint.LineHints>
-  local num_unprocessed = #result
-  if num_unprocessed == 0 then
-    state.active_request = {}
-    state.current_result = {}
-    if vim.fn.win_gettype(vim.fn.bufwinid(bufnr)) == '' then
-      api.nvim__redraw({ buf = bufnr, valid = true, flush = false })
-    end
-    return
-  end
-
   local lines = api.nvim_buf_get_lines(bufnr, 0, -1, false)
   local client = assert(vim.lsp.get_client_by_id(ctx.client_id))
 
@@ -208,7 +204,8 @@ function M.on_inlayhint(err, result, ctx)
   end
 end
 
----@private
+---@package
+---@param client_id integer
 function InlayHint:cancel_active_request(client_id)
   local state = assert(self.client_state[client_id])
   local client = vim.lsp.get_client_by_id(client_id)
@@ -222,16 +219,19 @@ function InlayHint:cancel_active_request(client_id)
 end
 
 --- |lsp-handler| for the method `workspace/inlayHint/refresh`
+---@param err lsp.ResponseError?
 ---@param ctx lsp.HandlerContext
----@private
+---@internal
 function M.on_refresh(err, _, ctx)
   if err then
     return vim.NIL
   end
 
   for bufnr, provider in pairs(InlayHint.active) do
-    if provider.client_state[ctx.client_id] then
-      provider:reset(ctx.client_id)
+    local state = provider.client_state[ctx.client_id]
+    if state then
+      provider:cancel_active_request(ctx.client_id)
+      state.current_result.version = nil
 
       if not vim.tbl_isempty(vim.fn.win_findbuf(bufnr)) then
         provider:refresh(ctx.client_id)

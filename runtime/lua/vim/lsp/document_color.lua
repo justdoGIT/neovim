@@ -55,16 +55,16 @@ end
 --- @return string
 local function get_hex_code(color)
   -- The RGB values in lsp.Color are in the [0-1] range, but we want them to be in the [0-255] range instead.
-  --- @param n number
-  color = vim.tbl_map(function(n)
+  --- @param n decimal
+  local rgb = vim.tbl_map(function(n)
     return math.floor((n * 255) + 0.5)
   end, color)
 
-  return ('#%02x%02x%02x'):format(color.red, color.green, color.blue):lower()
+  return ('#%02x%02x%02x'):format(rgb.red, rgb.green, rgb.blue):lower()
 end
 
 --- Cache of the highlight groups that we've already created.
---- @type table<string, true>
+--- @type table<string, boolean>
 local color_cache = {}
 local n_color_cache = 0
 
@@ -155,11 +155,13 @@ function Provider:on_detach(client_id)
 end
 
 ---@private
+---@param client_id integer
 function Provider:on_close(client_id)
   self:clear(client_id)
 end
 
 ---@private
+---@param client_id integer
 function Provider:on_change(client_id)
   self:request(client_id)
 end
@@ -317,7 +319,7 @@ function M.color_presentation()
     return
   end
 
-  local uri = vim.uri_from_bufnr(bufnr)
+  local uri = vim.uri.from_buf(bufnr)
   local client = assert(lsp.get_client_by_id(client_id))
 
   --- @type lsp.ColorPresentationParams

@@ -403,13 +403,12 @@ win_T *win_float_find_altwin(const win_T *win, const tabpage_T *tp)
 {
   win_T *wp = prevwin;
   if (tp == NULL) {
-    return (win_valid(wp) && wp != win && wp->w_config.focusable
-            && !wp->w_config.hide) ? wp : firstwin;
+    return (win_valid(wp) && wp != win && win_is_focusable(wp)) ? wp : firstwin;
   }
 
   assert(tp != curtab);
   wp = tabpage_win_valid(tp, tp->tp_prevwin) ? tp->tp_prevwin : tp->tp_firstwin;
-  return (wp != win && wp->w_config.focusable && !wp->w_config.hide) ? wp : tp->tp_firstwin;
+  return (wp != win && win_is_focusable(wp)) ? wp : tp->tp_firstwin;
 }
 
 /// Abort win_float_special(): emit any error, tear down the half-built window, unblock autocmds.
@@ -455,7 +454,7 @@ win_T *win_float_special(bool enter, bool new_buf, WinKind kind)
   config.style = kWinStyleMinimal;
   Error err = ERROR_INIT;
   bool preview = kind == kWinPreview;
-  if (preview && !win_previewpopup_config(&config)) {
+  if (preview && !win_previewpopup_config(p_pvp, &config)) {
     emsg(_(e_invarg));
     return NULL;
   }
@@ -580,13 +579,13 @@ void win_float_update_preview(win_T *wp)
   win_config_float(wp, wp->w_config);
 }
 
-/// Applies 'previewpopup' ("height:N,width:N,border:style") to `config`.
+/// Applies a 'previewpopup' value ("height:N,width:N,border:style") to `config`.
 ///
 /// @return false on an invalid value; caller emits E474.
-bool win_previewpopup_config(WinConfig *config)
+bool win_previewpopup_config(const char *value, WinConfig *config)
   FUNC_ATTR_NONNULL_ALL
 {
-  OptKeyDict_pvp *v = opt_keyset(p_pvp, kOptPreviewpopup, NULL);
+  OptKeyDict_pvp *v = opt_keyset(value, kOptPreviewpopup, NULL);
 
   if ((HAS_KEY(v, pvp, height) && v->height < 1) || (HAS_KEY(v, pvp, width) && v->width < 1)) {
     return false;

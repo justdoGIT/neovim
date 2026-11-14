@@ -1478,9 +1478,12 @@ bool cmd_has_expr_args(cmdidx_T cmdidx)
 /// @param[out] eap Ex command arguments
 /// @param[out] cmod Command modifiers
 /// @param[out] errormsg Error message, if any
+/// @param skipmods Skip modifiers, nextcmd, register and count. Keep leading
+///                 whitespace of the arguments.
 ///
 /// @return Success or failure
-bool parse_cmdline(char **cmdline, exarg_T *eap, cmdmod_T *cmod, const char **errormsg)
+bool parse_cmdline(char **cmdline, exarg_T *eap, cmdmod_T *cmod, const char **errormsg,
+                   bool skipmods)
 {
   char *after_modifier = NULL;
   bool retval = false;
@@ -1503,10 +1506,10 @@ bool parse_cmdline(char **cmdline, exarg_T *eap, cmdmod_T *cmod, const char **er
   };
 
   char *orig_cmd = eap->cmd;
-  // If parse command modifiers failed but modifiers were passed, continue
-  int result = parse_command_modifiers(eap, errormsg, cmod, false);
+  // Continue after modifiers without a command, not after an invalid modifier.
+  int result = skipmods ? OK : parse_command_modifiers(eap, errormsg, cmod, false);
   after_modifier = eap->cmd;
-  if (result == FAIL && after_modifier == orig_cmd) {
+  if (result == FAIL && (*errormsg != NULL || after_modifier == orig_cmd)) {
     goto end;
   }
 
@@ -1564,9 +1567,14 @@ bool parse_cmdline(char **cmdline, exarg_T *eap, cmdmod_T *cmod, const char **er
   if (!IS_USER_CMDIDX(eap->cmdidx)) {
     eap->argt = cmdnames[(int)eap->cmdidx].cmd_argt;
   }
-  // Skip to start of argument.
-  // Don't do this for the ":!" command, because ":!! -l" needs the space.
-  eap->arg = eap->cmdidx == CMD_bang ? p : skipwhite(p);
+  if (skipmods) {
+    // Only skip the space before the arguments, the rest belongs to them.
+    eap->arg = p + (*p == ' ');
+  } else {
+    // Skip to start of argument.
+    // Don't do this for the ":!" command, because ":!! -l" needs the space.
+    eap->arg = eap->cmdidx == CMD_bang ? p : skipwhite(p);
+  }
 
   // Don't treat ":r! filter" like a bang
   if (eap->cmdidx == CMD_read && eap->forceit) {
@@ -1575,9 +1583,9 @@ bool parse_cmdline(char **cmdline, exarg_T *eap, cmdmod_T *cmod, const char **er
 
   // Check for '|' to separate commands and '"' to start comments.
   // Don't do this for ":read !cmd" and ":write !cmd".
-  if ((eap->argt & EX_TRLBAR)) {
+  if (!skipmods && (eap->argt & EX_TRLBAR)) {
     separate_nextcmd(eap);
-  } else if (cmd_has_expr_args(eap->cmdidx)) {
+  } else if (!skipmods && cmd_has_expr_args(eap->cmdidx)) {
     // For commands without EX_TRLBAR, check for '|' separator
     // by skipping over expressions (including string literals)
     char *arg = eap->arg;
@@ -1612,9 +1620,11 @@ bool parse_cmdline(char **cmdline, exarg_T *eap, cmdmod_T *cmod, const char **er
   }
 
   // Parse register and count
-  parse_register(eap);
-  if (parse_count(eap, errormsg, false) == FAIL) {
-    goto end;
+  if (!skipmods) {
+    parse_register(eap);
+    if (parse_count(eap, errormsg, false) == FAIL) {
+      goto end;
+    }
   }
 
   // Remove leading whitespace and colon from next command
@@ -1879,6 +1889,13 @@ static bool skip_cmd(const exarg_T *eap)
     case CMD_finally:
     case CMD_endtry:
     case CMD_function:
+      break;
+
+    // commands that read a block of lines
+    case CMD_append:
+    case CMD_change:
+    case CMD_insert:
+    case CMD_loadkeymap:
       break;
 
     // Commands that handle '|' themselves.  Check: A command should
@@ -2581,6 +2598,8 @@ int parse_command_modifiers(exarg_T *eap, const char **errormsg, cmdmod_T *cmod,
         break;
       }
       if (!skip_only) {
+        xfree(cmod->cmod_filter_pat);
+        vim_regfree(cmod->cmod_filter_regmatch.regprog);
         cmod->cmod_filter_pat = xstrdup(reg_pat);
         cmod->cmod_filter_regmatch.regprog = vim_regcomp(reg_pat, RE_MAGIC);
         if (cmod->cmod_filter_regmatch.regprog == NULL) {
@@ -3205,6 +3224,11 @@ int modifier_len(char *cmd)
     p = skipwhite(skipdigits(cmd + 1));
   }
   for (int i = 0; i < (int)ARRAY_SIZE(cmdmods); i++) {
+    // cmdmod_info_tab[] is sorted by name: once the first letter is past
+    // the command's first letter no later entry can match.
+    if (cmdmods[i].name[0] > *p) {
+      break;
+    }
     int j;
     for (j = 0; p[j] != NUL; j++) {
       if (p[j] != cmdmods[i].name[j]) {
@@ -3334,12 +3358,7 @@ char *skip_range(const char *cmd, int *ctx)
         *ctx = EXPAND_NOTHING;
       }
     } else if (*cmd == '/' || *cmd == '?') {
-      unsigned delim = (unsigned)(*cmd++);
-      while (*cmd != NUL && *cmd != (char)delim) {
-        if (*cmd++ == '\\' && *cmd != NUL) {
-          cmd++;
-        }
-      }
+      cmd = skip_regexp((char *)cmd + 1, (uint8_t)(*cmd), p_magic);
       if (*cmd == NUL && ctx != NULL) {
         *ctx = EXPAND_NOTHING;
       }
@@ -4725,7 +4744,7 @@ bool before_quit_autocmds(win_T *wp, bool quit_all, bool forceit)
   if (*get_vim_var_str(VV_EXITREASON) == NUL) {
     set_vim_var_string(VV_EXITREASON, S_LEN("quit"));
   }
-  apply_autocmds(EVENT_QUITPRE, NULL, NULL, false, wp->w_buffer);
+  apply_autocmds_win(EVENT_QUITPRE, NULL, NULL, false, wp->w_buffer, wp);
 
   // Bail out when autocommands closed the window.
   // Refuse to quit when the buffer in the last window is being closed (can
@@ -4822,7 +4841,7 @@ static void ex_cquit(exarg_T *eap)
 {
   // this does not always pass on the exit code to the Manx compiler. why?
   int status = eap->addr_count > 0 ? (int)eap->line2 : EXIT_FAILURE;
-  ui_call_error_exit(status);
+  ui_call_error_exit(status, NULL_STRING);
   getout(status);
 }
 
@@ -5013,9 +5032,12 @@ static void ex_restart(exarg_T *eap)
 
   // Prevent new server from self-exiting when the channel closes.
   ArenaMem result_mem = NULL;
-  MAXSIZE_TEMP_ARRAY(detach_args, 1);
-  ADD_C(detach_args, BOOLEAN_OBJ(true));
-  rpc_send_call(channel->id, "nvim__chan_set_detach", detach_args, &result_mem, &err);
+  MAXSIZE_TEMP_DICT(detach_opts, 1);
+  PUT_C(detach_opts, "detach", BOOLEAN_OBJ(true));
+  MAXSIZE_TEMP_ARRAY(detach_args, 2);
+  ADD_C(detach_args, INTEGER_OBJ(0));
+  ADD_C(detach_args, DICT_OBJ(detach_opts));
+  rpc_send_call(channel->id, "nvim_chan_set", detach_args, -1, &result_mem, &err);
   if (ERROR_SET(&err)) {
     goto fail_2;
   }
@@ -5031,7 +5053,7 @@ static void ex_restart(exarg_T *eap)
     MAXSIZE_TEMP_ARRAY(autocmd_args, 2);
     ADD_C(autocmd_args, CSTR_AS_OBJ("UIEnter"));
     ADD_C(autocmd_args, DICT_OBJ(autocmd_opts));
-    rpc_send_call(channel->id, "nvim_create_autocmd", autocmd_args, &result_mem, &err);
+    rpc_send_call(channel->id, "nvim_create_autocmd", autocmd_args, -1, &result_mem, &err);
     if (ERROR_SET(&err)) {
       goto fail_2;
     }
@@ -5042,7 +5064,8 @@ static void ex_restart(exarg_T *eap)
   // Get the new server's initial address. On Windows this is the temporary self-generated address.
   MAXSIZE_TEMP_ARRAY(servername_args, 1);
   ADD_C(servername_args, CSTR_AS_OBJ("servername"));
-  Object result = rpc_send_call(channel->id, "nvim_get_vvar", servername_args, &result_mem, &err);
+  Object result = rpc_send_call(channel->id, "nvim_get_vvar", servername_args, -1, &result_mem,
+                                &err);
   if (ERROR_SET(&err)) {
     goto fail_2;
   }
@@ -5066,7 +5089,7 @@ static void ex_restart(exarg_T *eap)
     ADD_C(handoff_params, CSTR_AS_OBJ(listen_arg));
     ADD_C(handoff_params, INTEGER_OBJ((Integer)ui_active()));
     ADD_C(lua_args, ARRAY_OBJ(handoff_params));
-    rpc_send_call(channel->id, "nvim_exec_lua", lua_args, &result_mem, &err);
+    rpc_send_call(channel->id, "nvim_exec_lua", lua_args, -1, &result_mem, &err);
     if (ERROR_SET(&err)) {
       goto fail_2;
     }
@@ -5076,7 +5099,10 @@ static void ex_restart(exarg_T *eap)
 #endif
 
   // Send restart event with new listen address to all UIs.
-  ui_call_restart(cstr_as_string(listen_addr));
+  // If the new server reused the --listen address (TODO: not on Windows, it rebinds on exit), UI
+  // reconnects through the `addr` (e.g. a tunnel) stored on its channel (nvim_chan_set).
+  bool reuse_addr = listen_arg != NULL && strequal(listen_addr, listen_arg);
+  remote_ui_restart(cstr_as_string(listen_addr), reuse_addr);
   ui_flush();
   xfree(listen_addr);
 
@@ -5113,7 +5139,7 @@ fail_2:
   // Before killing the new server, close its stderr to avoid polluting the current UI.
   MAXSIZE_TEMP_ARRAY(chanclose_expr_args, 1);
   ADD_C(chanclose_expr_args, CSTR_AS_OBJ("chanclose(v:stderr)"));
-  rpc_send_call(channel->id, "nvim_eval", chanclose_expr_args, &result_mem, &err);
+  rpc_send_call(channel->id, "nvim_eval", chanclose_expr_args, -1, &result_mem, &err);
   api_clear_error(&err);
   arena_mem_free(result_mem);
 #endif
@@ -5165,9 +5191,11 @@ static void ex_pclose(exarg_T *eap)
 /// Close window "win" and take care of handling closing the last window for a
 /// modified buffer.
 ///
-/// @param tp  NULL or the tab page "win" is in
+/// @param tp  NULL or the tab page "win" is in, if different from "curtab"
 void ex_win_close(int forceit, win_T *win, tabpage_T *tp)
 {
+  assert(tp == NULL || tp != curtab);
+
   // Never close the autocommand window.
   if (is_ctx_win(win)) {
     emsg(_(e_autocmd_close));
@@ -5276,6 +5304,8 @@ static void ex_tabonly(exarg_T *eap)
 /// Close the current tab page.
 void tabpage_close(int forceit)
 {
+  int done = 0;
+
   if (window_layout_locked(CMD_tabclose)) {
     return;
   }
@@ -5286,9 +5316,13 @@ void tabpage_close(int forceit)
 
   // First close all the windows but the current one.  If that worked then
   // close the last window in this tab, that will close it.
-  while (curwin->w_floating) {
+  while (curwin->w_floating && ++done < 1000) {
     ex_win_close(forceit, curwin, NULL);
   }
+  if (done == 1000) {
+    return;
+  }
+
   if (!ONE_WINDOW) {
     close_others(true, forceit, true);
   }
@@ -5311,6 +5345,8 @@ void tabpage_close_other(tabpage_T *tp, int forceit)
   int done = 0;
   char prev_idx[NUMBUFLEN];
 
+  assert(tp != curtab);
+
   if (window_layout_locked(CMD_SIZE)) {
     return;
   }
@@ -5323,12 +5359,20 @@ void tabpage_close_other(tabpage_T *tp, int forceit)
   while (++done < 1000) {
     snprintf(prev_idx, sizeof(prev_idx), "%i", tabpage_index(tp));
     win_T *wp = tp->tp_lastwin;
+
+    // Autocommands (including TabClosedPre above) may change the current tab page,
+    // abort a `:tabonly` (etc) if we're now on the tab we're trying to close
+    if (tp == curtab) {
+      done = 1000;
+      break;
+    }
     ex_win_close(forceit, wp, tp);
 
     // Autocommands may delete the tab page under our fingers.
     if (!valid_tabpage(tp)) {
       break;
     }
+
     // We may fail to close a window with a modified buffer.
     if (tp->tp_lastwin == wp) {
       done = 1000;
@@ -5798,7 +5842,7 @@ static void ex_tabs(exarg_T *eap)
     FOR_ALL_WINDOWS_IN_TAB(wp, tp) {
       if (got_int) {
         break;
-      } else if (!wp->w_config.focusable || wp->w_config.hide) {
+      } else if (!win_is_focusable(wp)) {
         continue;
       }
 
@@ -5825,14 +5869,15 @@ static void ex_tabs(exarg_T *eap)
 /// ":%detach" detaches all UIs _except_ the current UI.
 static void ex_detach(exarg_T *eap)
 {
-  Channel *chan = find_channel(current_ui);
-  if (!chan) {
+  if (!remote_ui_attached(current_ui)) {
     emsg(_(e_noui));
     return;
   }
 
   if (eap && eap->forceit) {
+    Channel *chan = find_channel(current_ui);
     chan->detach = true;
+    channel_event(chan, EVENT_CHANINFO);
     msg(_("Nvim will continue running if the UI disconnects"), 0);
     return;
   }
@@ -5872,14 +5917,88 @@ static void ex_detach(exarg_T *eap)
 ///
 /// Connects the current UI to a different server
 ///
-/// ":connect <address>" detaches the current UI and connects to the given server.
-/// ":connect! <address>" stops the current server if no other UIs are attached, then connects to the given server.
+/// ":connect" shows a menu of discovered servers.
+/// ":connect <addr>" detaches the UI and connects to <addr>, then stops the current server.
+/// ":connect ssh://<uri>" bootstraps a remote Nvim over SSH, then connects.
+///
+/// Fails if this is the last UI and ":qall" would fail (e.g. unsaved changes).
 static void ex_connect(exarg_T *eap)
 {
-  bool stop_server = eap->forceit ? (ui_active() == 1) : false;
+  char *addr = eap->arg;
+  typval_T ssh_rettv = { .v_type = VAR_UNKNOWN };
+  char *full_addr = NULL;  // "foo.sock" => "/home/me/foo.sock"
+  bool is_tcp = socket_address_tcp_host_end(addr) != NULL;
+  bool is_ssh = STRNICMP(addr, "ssh://", 6) == 0;
+  const char *error = NULL;
+
+  // XXX: No "!" for no-args, SSH (tunnel owned by this server, stopping it would kill the session).
+  if (eap->forceit && (*addr == NUL || is_ssh)) {
+    emsg(_(e_nobang));
+    return;
+  }
+  if (!remote_ui_attached(current_ui)) {
+    emsg(_(e_noui));
+    return;
+  }
+  // Abort if this is the last UI and a buffer has unsaved changes.
+  if (ui_active() == 1 && check_changed_any(false, false)) {
+    return;
+  }
+
+  // No address: let the user select from a menu of known servers.
+  if (*addr == NUL) {
+    typval_T no_args[] = { { .v_type = VAR_UNKNOWN } };
+    nlua_call_typval("vim._core.server", "select_connect", no_args, NULL);
+    return;
+  }
+
+  // SSH URI: bootstrap remote Nvim, get local forwarded socket.
+  if (is_ssh) {
+    typval_T argvars[] = { { .v_type = VAR_STRING, .vval.v_string = addr },
+                           { .v_type = VAR_NUMBER, .vval.v_number = (varnumber_T)current_ui },
+                           { .v_type = VAR_UNKNOWN } };
+    nlua_call_typval("vim.net._ssh", "connect", argvars, &ssh_rettv);
+    if (ssh_rettv.v_type != VAR_STRING || ssh_rettv.vval.v_string == NULL) {
+      tv_clear(&ssh_rettv);
+      return;  // Declined, interrupted (CTRL-C), or failed (E6101 shown).
+    }
+
+    addr = ssh_rettv.vval.v_string;
+  } else {
+    if (!is_tcp && !path_is_absolute(addr)) {
+      // Relative to the current directory (not the UI's), like other file args.
+      addr = full_addr = FullName_save(addr, true);
+    }
+    if (!socket_alive(&main_loop, is_tcp, addr, &error)) {
+      semsg(_("E6102: Cannot connect to %s: %s"), addr, error);
+      xfree(full_addr);
+      return;
+    }
+
+    // remote-ssh: UI reconnects through same tunnel, relinked to `addr` (vim.net._ssh.relink()).
+    Channel *chan = find_channel(current_ui);
+    if (!is_tcp && chan && chan->addr) {
+      typval_T argvars[] = { { .v_type = VAR_STRING, .vval.v_string = chan->addr },
+                             { .v_type = VAR_STRING, .vval.v_string = addr },
+                             { .v_type = VAR_UNKNOWN } };
+      typval_T relinked = { .v_type = VAR_UNKNOWN };
+      nlua_call_typval("vim.net._ssh", "relink", argvars, &relinked);
+      if (relinked.v_type != VAR_BOOL) {  // Error (already shown).
+        xfree(full_addr);
+        return;
+      }
+      if (relinked.vval.v_bool == kBoolVarTrue) {
+        addr = chan->addr;
+      }
+    }
+  }
+
+  bool stop_server = !is_ssh && ui_active() == 1;
 
   Error err = ERROR_INIT;
-  remote_ui_connect(current_ui, eap->arg, &err);
+  remote_ui_connect(current_ui, addr, &err);
+  tv_clear(&ssh_rettv);
+  xfree(full_addr);
 
   if (ERROR_SET(&err)) {
     emsg(err.msg);
@@ -6921,19 +7040,21 @@ static void ex_redraw(exarg_T *eap)
   } else if (Visual.active) {
     redraw_curbuf_later(UPD_INVERTED);
   }
-  update_screen();
+  const bool redrawn = update_screen() == OK;
   if (need_maketitle) {
     maketitle();
   }
   RedrawingDisabled = r;
   p_lz = p;
 
-  // Reset msg_didout, so that a message that's there is overwritten.
-  msg_didout = false;
-  msg_col = 0;
+  if (redrawn) {  // Else postponed (e.g. at the hit-enter prompt): keep the messages.
+    // Reset msg_didout, so that a message that's there is overwritten.
+    msg_didout = false;
+    msg_col = 0;
 
-  // No need to wait after an intentional redraw.
-  need_wait_return = false;
+    // No need to wait after an intentional redraw.
+    need_wait_return = false;
+  }
 
   ui_flush();
 }
@@ -7074,7 +7195,7 @@ void update_topline_cursor(void)
   update_curswant();
 }
 
-/// Save the current State and go to Normal mode.
+/// Save the current State (editor-mode) and go to Normal mode.
 void save_current_state(save_state_T *sst)
   FUNC_ATTR_NONNULL_ALL
 {
@@ -7124,6 +7245,8 @@ void restore_current_state(save_state_T *sst)
   ui_cursor_shape();  // may show different cursor shape
 }
 
+/// True while evaluating an `<expr>` mapping.
+/// Buffer changes are not allowed, except for internal-only dummy buffers.
 bool expr_map_locked(void)
 {
   return expr_map_lock > 0 && !(curbuf->b_flags & BF_DUMMY);

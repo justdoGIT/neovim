@@ -71,7 +71,9 @@
 #include "nvim/lua/treesitter.h"
 #include "nvim/macros_defs.h"
 #include "nvim/main.h"
+#include "nvim/mapping.h"
 #include "nvim/mark.h"
+#include "nvim/mcursor.h"
 #include "nvim/memline.h"
 #include "nvim/memory.h"
 #include "nvim/message.h"
@@ -199,6 +201,7 @@ static void early_init(mparm_T *paramp)
   init_normal_cmds();   // Init the table of Normal mode commands.
   runtime_init();
   highlight_init();
+  mc_init();
 
 #ifdef MSWIN
   OSVERSIONINFO ovi;
@@ -306,7 +309,11 @@ int main(int argc, char **argv)
   }
 #endif
 
-  if (embedded_mode) {
+  // "--embed --listen …": use stdio as RPC chan only if stdin is a pipe/socket.
+  // Otherwise (tty, /dev/null, EOF) wait for a UI.
+  uv_handle_type stdin_type = uv_guess_handle(STDIN_FILENO);
+  bool stdio_rpc = !params.listen_addr || stdin_type == UV_NAMED_PIPE || stdin_type == UV_TCP;
+  if (embedded_mode && stdio_rpc) {
     const char *err;
     if (!channel_from_stdio(true, CALLBACK_READER_INIT, &err)) {
       abort();
@@ -351,7 +358,7 @@ int main(int argc, char **argv)
 
   // NORETURN: Start builtin UI client.
   if (ui_client_channel_id) {
-    ui_client_run();  // NORETURN
+    ui_client_run(remote_ui ? params.server_addr : NULL);  // NORETURN
   }
   assert(!ui_client_channel_id && !use_builtin_ui);
   // Nvim server...
@@ -415,10 +422,13 @@ int main(int argc, char **argv)
   // Set the break level after the terminal is initialized.
   debug_break_level = params.use_debug_break_level;
 
-  // Wait for UIs to set up Nvim or show early messages
-  // and prompts (--cmd, swapfile dialog, …).
+  // Wait for UIs to set up Nvim or show early messages and prompts (--cmd, swapfile dialog, …).
   bool use_remote_ui = (embedded_mode && !headless_mode);
   if (use_remote_ui) {
+    if (!stdio_rpc) {
+      fprintf(stderr, "Nvim server (pid: %" PRId64 ") waiting for UI, listening on: \"%s\"\n",
+              os_get_pid(), get_vim_var_str(VV_SEND_SERVER));
+    }
     TIME_MSG("waiting for UI");
     remote_ui_wait_for_attach();
     TIME_MSG("done waiting for UI");
@@ -458,8 +468,10 @@ int main(int argc, char **argv)
 
   // Reset 'loadplugins' for "-u NONE" before "--cmd" arguments.
   // Allows for setting 'loadplugins' there.
-  // For --clean we still want to load plugins.
-  p_lpl = vimrc_none ? params.clean : p_lpl;
+  // For --clean we still want to load plugins (unless --noplugin was given).
+  if (vimrc_none && !params.clean) {
+    p_lpl = false;
+  }
 
   // Execute --cmd arguments.
   exe_pre_commands(&params);
@@ -716,7 +728,6 @@ void os_exit(int r)
     }
   } else {
     ui_flush();
-    ui_call_stop();
   }
 
   if (!event_teardown() && r == 0) {
@@ -745,6 +756,14 @@ void os_exit(int r)
 #endif
 
   exit(r);
+}
+
+/// Prompts/dialogs should not wait for a key (no chance of meaningful input).
+bool input_unanswerable(void)
+{
+  return v_dying  // Got deadly signal.
+         // Exiting without a UI.
+         || (exiting && !ui_active());
 }
 
 /// Exit properly
@@ -794,7 +813,7 @@ void getout(int exitval)
           bufref_T bufref;
 
           set_bufref(&bufref, buf);
-          apply_autocmds(EVENT_BUFWINLEAVE, buf->b_fname, buf->b_fname, false, buf);
+          apply_autocmds_win(EVENT_BUFWINLEAVE, buf->b_fname, buf->b_fname, false, buf, wp);
           if (bufref_valid(&bufref)) {
             buf_set_changedtick(buf, -1);  // note that we did it already
           }
@@ -857,6 +876,9 @@ void getout(int exitval)
   profile_dump();
 
   if (did_emsg) {
+    if (!headless_mode && input_unanswerable()) {
+      WLOG("Exiting with error: \"%s\"", get_vim_var_str(VV_ERRMSG));
+    }
     // give the user a chance to read the (error) message
     no_wait_return = false;
     // TODO(justinmk): this may call getout(0), clobbering exitval...
@@ -968,8 +990,9 @@ static uint64_t server_connect(char *server_addr, const char **errmsg)
   CallbackReader on_data = CALLBACK_READER_INIT;
   const char *error = NULL;
   bool is_tcp = socket_address_tcp_host_end(server_addr) != NULL;
-  // connected to channel
-  uint64_t chan = channel_connect(is_tcp, server_addr, true, on_data, 500, &error);
+  uint64_t chan = channel_connect(is_tcp, server_addr, true,
+                                  false,  // Disallow server-to-client API calls.
+                                  on_data, 500, &error);
   if (error) {
     *errmsg = error;
     return 0;
@@ -1686,7 +1709,7 @@ static void handle_tag(char *tagname)
 
     // If the user doesn't want to edit the file then we quit here.
     if (swap_exists_did_quit) {
-      ui_call_error_exit(1);
+      ui_call_error_exit(1, NULL_STRING);
       getout(1);
     }
   }
@@ -1833,7 +1856,7 @@ static void create_windows(mparm_T *parmp)
           if (got_int || only_one_window()) {
             // abort selected or quit and only one window
             did_emsg = false;               // avoid hit-enter prompt
-            ui_call_error_exit(1);
+            ui_call_error_exit(1, NULL_STRING);
             getout(1);
           }
           // We can't close the window, it would disturb what
@@ -1936,7 +1959,7 @@ static void edit_buffers(mparm_T *parmp)
         if (got_int || only_one_window()) {
           // abort selected and only one window
           did_emsg = false;             // avoid hit-enter prompt
-          ui_call_error_exit(1);
+          ui_call_error_exit(1, NULL_STRING);
           getout(1);
         }
         win_close(curwin, true, false);
@@ -2364,7 +2387,7 @@ static void usage(void)
 static void check_swap_exists_action(void)
 {
   if (swap_exists_action == SEA_QUIT) {
-    ui_call_error_exit(1);
+    ui_call_error_exit(1, NULL_STRING);
     getout(1);
   }
   handle_swap_exists(NULL);

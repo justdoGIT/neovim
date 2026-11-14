@@ -77,7 +77,7 @@ local function get_group(client)
 end
 
 ---@param state vim.lsp.CTBufferState
----@param encoding string
+---@param encoding 'utf-8'|'utf-16'|'utf-32'
 ---@param bufnr integer
 ---@param firstline integer
 ---@param lastline integer
@@ -130,7 +130,6 @@ end
 ---@param client vim.lsp.Client
 ---@param bufnr integer
 function M.init(client, bufnr)
-  assert(client.offset_encoding, 'lsp client must have an offset_encoding')
   local group = get_group(client)
   local state = state_by_group[group]
   if state then
@@ -183,7 +182,7 @@ function M._send_did_save(bufnr)
     table.insert(entry.clients, client)
   end
 
-  local uri = vim.uri_from_bufnr(bufnr)
+  local uri = vim.uri.from_buf(bufnr)
   local text = vim.func._memoize('concat', vim.lsp._buf_get_full_text)
 
   -- Send didOpen/didClose/didSave to all client groups.
@@ -198,7 +197,7 @@ function M._send_did_save(bufnr)
       if old_name and name ~= old_name then
         client:notify('textDocument/didClose', {
           textDocument = {
-            uri = vim.uri_from_fname(old_name),
+            uri = vim.uri.from_fname(old_name),
           },
         }, bufnr)
         client:notify('textDocument/didOpen', {
@@ -250,7 +249,6 @@ function M.reset_buf(client, bufnr)
   if not state then
     return
   end
-  assert(state.buffers, 'CTGroupState must have buffers')
   local buf_state = state.buffers[bufnr]
   if not buf_state then
     return
@@ -327,7 +325,7 @@ local function send_changes(bufnr, sync_kind, state, buf_state)
       { text = vim.lsp._buf_get_full_text(bufnr) },
     }
   end
-  local uri = vim.uri_from_bufnr(bufnr)
+  local uri = vim.uri.from_buf(bufnr)
   for _, client in pairs(state.clients) do
     if not client:is_stopped() and vim.lsp.buf_is_attached(bufnr, client.id) then
       client:notify('textDocument/didChange', {
@@ -383,7 +381,7 @@ local function send_changes_for_group(bufnr, firstline, lastline, new_lastline, 
     local timer = assert(uv.new_timer(), 'Must be able to create timer')
     buf_state.timer = timer
     timer:start(
-      debounce,
+      math.floor(debounce),
       0,
       vim.schedule_wrap(function()
         reset_timer(buf_state)

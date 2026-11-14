@@ -2,6 +2,7 @@
 
 local api = vim.api
 local fs = vim.fs
+local is_url = vim._core.path_is_url
 
 local M = {}
 
@@ -48,7 +49,7 @@ end
 
 ---@param path string
 function M.open_parent_path(path)
-  if path == '' or path:find('^%a[%w+.-]*://') then
+  if path == '' or is_url(path) then
     navigate('.')
     return
   end
@@ -102,6 +103,15 @@ function M.init(buf, path)
   if api.nvim_get_option_value('filetype', { buf = buf }) ~= 'directory' then
     api.nvim_set_option_value('filetype', 'directory', { buf = buf })
   end
+  local dir = require('nvim.dir')
+  vim.keymap.set('n', '<Plug>(nvim-dir-vsplit)', function()
+    dir._open_entry('vsplit')
+  end, { buffer = buf, silent = true, desc = 'Open directory entry in a vertical split' })
+  vim.keymap.set('n', '<Plug>(nvim-dir-split)', function()
+    dir._open_entry('split')
+  end, { buffer = buf, silent = true, desc = 'Open directory entry in a horizontal split' })
+  dir._map(buf, 'a', '<Plug>(nvim-dir-vsplit)')
+  dir._map(buf, 'o', '<Plug>(nvim-dir-split)')
   api.nvim_buf_call(buf, function()
     pcall(api.nvim_cmd, {
       cmd = 'bcd',
